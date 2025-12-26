@@ -1,6 +1,9 @@
+# backend/src/ai_organizer/api/routes/auth.py
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -20,9 +23,17 @@ from ai_organizer.models import User, RefreshToken
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+# -----------------------------
+# Schemas
+# -----------------------------
 class RegisterIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class RegisterOut(BaseModel):
+    ok: bool = True
+    userId: int
 
 
 class TokenOut(BaseModel):
@@ -31,8 +42,50 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
 
 
-@router.post("/register", response_model=dict)
-def register(payload: RegisterIn, session: Session = Depends(get_db)):
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+class LogoutIn(BaseModel):
+    refresh_token: str
+
+
+class MeOut(BaseModel):
+    id: int
+    email: EmailStr
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def _ensure_utc(dt: datetime) -> datetime:
+    # sqlite / sqlmodel μπορεί να δώσει naive datetime
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _decode_refresh_or_401(token: str) -> dict[str, Any]:
+    try:
+        data = decode_token(token)
+    except Exception:
+        # (ValueError/JWTError/etc.) → πάντα 401 προς τα έξω
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    if data.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    sub = data.get("sub")
+    jti = data.get("jti")
+    if not sub or not jti:
+        raise HTTPException(status_code=401, detail="Malformed refresh token")
+
+    return data
+
+
+# -----------------------------
+# Routes
+# -----------------------------
+@router.post("/register", response_model=RegisterOut)
+def register(payload: RegisterIn, session: Session = Depends(get_db)) -> RegisterOut:
     existing = session.exec(select(User).where(User.email == payload.email)).first()
     if existing:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -41,15 +94,23 @@ def register(payload: RegisterIn, session: Session = Depends(get_db)):
     session.add(user)
     session.commit()
     session.refresh(user)
-    return {"ok": True, "userId": user.id}
+
+    return RegisterOut(userId=user.id)
 
 
 @router.post("/login", response_model=TokenOut)
-def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depends(get_db)):
+def login(
+    form: OAuth2PasswordRequestForm = Depends(),
+    session: Session = Depends(get_db),
+) -> TokenOut:
     # OAuth2PasswordRequestForm uses: username + password
+    # Εδώ: username == email
     user = session.exec(select(User).where(User.email == form.username)).first()
     if not user or not verify_password(form.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+        )
 
     access = create_access_token(subject=user.email, extra={"uid": user.id})
     refresh, jti, expires_at = create_refresh_token(subject=user.email)
@@ -67,36 +128,20 @@ def login(form: OAuth2PasswordRequestForm = Depends(), session: Session = Depend
     return TokenOut(access_token=access, refresh_token=refresh)
 
 
-class RefreshIn(BaseModel):
-    refresh_token: str
-
-
 @router.post("/refresh", response_model=TokenOut)
-def refresh(payload: RefreshIn, session: Session = Depends(get_db)):
-    # 1) cryptographic validation + exp validation (jwt)
-    try:
-        data = decode_token(payload.refresh_token)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+def refresh(payload: RefreshIn, session: Session = Depends(get_db)) -> TokenOut:
+    data = _decode_refresh_or_401(payload.refresh_token)
 
-    # 2) ensure correct token type
-    if data.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+    email = data["sub"]
+    jti = data["jti"]
 
-    email = data.get("sub")
-    jti = data.get("jti")
-    if not email or not jti:
-        raise HTTPException(status_code=401, detail="Malformed refresh token")
-
-    # 3) DB validation (revocation + server-side expiry authority)
+    # DB validation: exists + not revoked
     rt = session.exec(select(RefreshToken).where(RefreshToken.jti == jti)).first()
     if not rt or rt.revoked:
         raise HTTPException(status_code=401, detail="Refresh token revoked/unknown")
 
-    db_exp = rt.expires_at
-    if db_exp.tzinfo is None:
-        db_exp = db_exp.replace(tzinfo=timezone.utc)
-
+    # DB expiry as source of truth
+    db_exp = _ensure_utc(rt.expires_at)
     if db_exp < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Refresh token expired")
 
@@ -123,33 +168,19 @@ def refresh(payload: RefreshIn, session: Session = Depends(get_db)):
     return TokenOut(access_token=access, refresh_token=new_refresh)
 
 
-class LogoutIn(BaseModel):
-    refresh_token: str
-
-
 @router.post("/logout", response_model=dict)
-def logout(payload: LogoutIn, session: Session = Depends(get_db)):
-    try:
-        data = decode_token(payload.refresh_token)
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
-
-    # ✅ NEW: require refresh token specifically
-    if data.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    jti = data.get("jti")
-    if not jti:
-        raise HTTPException(status_code=400, detail="Malformed refresh token")
+def logout(payload: LogoutIn, session: Session = Depends(get_db)) -> dict:
+    data = _decode_refresh_or_401(payload.refresh_token)
+    jti = data["jti"]
 
     rt = session.exec(select(RefreshToken).where(RefreshToken.jti == jti)).first()
-    if rt:
+    if rt and not rt.revoked:
         rt.revoked = True
         session.commit()
 
     return {"ok": True}
 
 
-@router.get("/me", response_model=dict)
-def me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "email": user.email}
+@router.get("/me", response_model=MeOut)
+def me(user: User = Depends(get_current_user)) -> MeOut:
+    return MeOut(id=user.id, email=user.email)
