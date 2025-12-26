@@ -1,3 +1,4 @@
+# Auto-detect text files and normalize to LF by default
 * text=auto eol=lf
 
 # Windows scripts stay CRLF
@@ -5,8 +6,19 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
-# Keep source/code + json as LF (avoid the warning + noisy diffs)
+# Keep source/code + config as LF (avoid warnings + noisy diffs)
 *.json text eol=lf
 *.ts   text eol=lf
 *.tsx  text eol=lf
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
 *.py   text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.env  text eol=lf
+*.txt  text eol=lf
+
