@@ -1,5 +1,12 @@
 * text=auto eol=lf
 
+# Windows scripts stay CRLF
 *.ps1 text eol=crlf
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Keep source/code + json as LF (avoid the warning + noisy diffs)
+*.json text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.py   text eol=lf
