@@ -3,7 +3,11 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.env
+
+# Env files (ignore all, keep templates)
+**/.env
+**/.env.*
+!**/.env.example
 
 # Logs
 logs
