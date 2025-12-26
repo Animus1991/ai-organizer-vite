@@ -47,3 +47,7 @@ Thumbs.db
 backend/data/*.db
 backend/data/*.db.*
 backend/data/uploads/
+
+# Local app database
+data/app.db
+*.db
