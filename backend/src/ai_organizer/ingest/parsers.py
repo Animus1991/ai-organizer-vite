@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from docx import Document as DocxDocument
 
 def read_text_file(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
@@ -61,3 +62,13 @@ def _flatten_mapping_conv(conv: dict) -> str:
     for _, author, text in nodes:
         out.append(f"{author.upper()}:\n{text}\n")
     return "\n".join(out).strip()
+
+def read_docx_file(path: Path) -> str:
+    doc = DocxDocument(str(path))
+    parts = []
+    for p in doc.paragraphs:
+        text = (p.text or "").strip()
+        if text:
+            parts.append(text)
+    # paragraphs separated by blank line
+    return "\n\n".join(parts)

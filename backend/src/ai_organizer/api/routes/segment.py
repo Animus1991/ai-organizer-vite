@@ -25,8 +25,7 @@ def segment_document(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # ✅ IMPORTANT: delete ALL segments for this document
-        # because you have UniqueConstraint(document_id, order_index)
+        # ✅ delete ALL segments for this document (UniqueConstraint safe)
         session.exec(delete(Segment).where(Segment.document_id == document_id))
         session.commit()
 
@@ -67,7 +66,8 @@ def segment_document(
 
         session.commit()
 
-    return {"ok": True, "documentId": document_id, "mode": mode, "segments": order}
+    # ✅ use "count" so UI can show "Segmented: X segments"
+    return {"ok": True, "documentId": document_id, "mode": mode, "count": order}
 
 
 @router.get("/documents/{document_id}/segments")
@@ -102,6 +102,7 @@ def list_segments(
                 "content": s.content,
                 "start": s.start_char,
                 "end": s.end_char,
+                "createdAt": getattr(s, "created_at", None),
             }
             for s in items
         ]

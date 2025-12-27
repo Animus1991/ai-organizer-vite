@@ -22,23 +22,23 @@ def _normalize_origins(value: Union[str, Iterable[str], None]) -> List[str]:
     if value is None:
         return []
 
-    # If it's already a list/tuple/set/etc (but not a string), convert to list
     if isinstance(value, (list, tuple, set)):
         return [str(x).strip() for x in value if str(x).strip()]
 
-    # Otherwise treat as string
     s = str(value).strip()
     if not s:
         return []
 
-    # Allow comma-separated origins
     parts = [p.strip() for p in s.split(",")]
     return [p for p in parts if p]
 
 
 origins = _normalize_origins(getattr(settings, "AIORG_CORS_ORIGINS", None))
 
-# If someone sets AIORG_CORS_ORIGINS="*", FastAPI/Starlette won't allow credentials with "*".
+# ✅ fallback για dev, αν δεν έχει οριστεί env
+if not origins:
+    origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 allow_all = len(origins) == 1 and origins[0] == "*"
 allow_credentials = False if allow_all else True
 
@@ -56,10 +56,9 @@ app.add_middleware(
 def on_startup() -> None:
     create_db_and_tables()
 
-# Canonical API prefix
+# ✅ canonical API prefix
 app.include_router(api_router, prefix="/api")
 
-# Simple root health endpoint (useful for quick checks)
 @app.get("/health")
 def health_root():
     return {"ok": True}

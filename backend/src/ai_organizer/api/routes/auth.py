@@ -20,8 +20,7 @@ from ai_organizer.core.security import (
 )
 from ai_organizer.models import User, RefreshToken
 
-router = APIRouter(prefix="/auth", tags=["auth"])
-
+router = APIRouter()
 
 # -----------------------------
 # Schemas
