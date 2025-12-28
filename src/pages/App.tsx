@@ -4,6 +4,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import ProtectedRoute from "../auth/ProtectedRoute";
 import Login from "./Login";
 import Home from "./Home";
+import SegmentDetails from "./SegmentDetails";
+import DocumentWorkspace from "./DocumentWorkspace";
 
 export default function App() {
   return (
@@ -13,6 +15,8 @@ export default function App() {
       {/* Protected area */}
       <Route element={<ProtectedRoute />}>
         <Route path="/" element={<Home />} />
+        <Route path="/segments/:segmentId" element={<SegmentDetails />} />
+        <Route path="/documents/:documentId" element={<DocumentWorkspace />} />
       </Route>
 
       {/* fallback */}
