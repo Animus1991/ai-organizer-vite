@@ -39,7 +39,6 @@ def segment_document(
         chunks = segment_qa(text) if mode == "qa" else segment_paragraphs(text)
 
         order = 0
-        cursor = 0
 
         for ch in chunks:
             raw_content = (ch.get("content") or "")
@@ -47,25 +46,18 @@ def segment_document(
             if not content:
                 continue
 
-            # Prefer exact spans from segmenter (if present)
             start = ch.get("start")
             end = ch.get("end")
 
-            if isinstance(start, int) and isinstance(end, int) and 0 <= start <= end <= len(text):
-                pass
-            else:
-                # fallback: try to locate content in text
-                start = text.find(content, cursor)
-                if start < 0:
-                    start = cursor
-                end = start + len(content)
-                cursor = max(cursor, end)
-
-                # clamp
-                if end > len(text):
-                    end = len(text)
-                if start > end:
-                    start = end
+            # ✅ HARD guarantee: start/end must exist (segmenter must provide them)
+            if not (isinstance(start, int) and isinstance(end, int)):
+                raise HTTPException(status_code=500, detail="Segmenter did not provide start/end")
+            if start < 0:
+                start = 0
+            if end > len(text):
+                end = len(text)
+            if end < start:
+                end = start
 
             seg = Segment(
                 document_id=document_id,
@@ -177,24 +169,6 @@ def list_segmentations(
             for (m, c, last) in rows
         ]
 
-# @router.get("/documents/{document_id}")
-# def get_document(
-#     document_id: int,
-#     user: User = Depends(get_current_user),
-# ):
-#     with Session(engine) as session:
-#         doc = session.exec(
-#             select(Document).where(Document.id == document_id, Document.user_id == user.id)
-#         ).first()
-#         if not doc:
-#             raise HTTPException(status_code=404, detail="Document not found")
-#
-#         return {
-#             "id": doc.id,
-#             "text": doc.text or "",
-#             # αν δεν έχεις filename στο μοντέλο Document, απλά θα βγει None
-#             "filename": getattr(doc, "filename", None),
-#         }
 
 @router.delete("/documents/{document_id}/segments")
 def delete_segments(

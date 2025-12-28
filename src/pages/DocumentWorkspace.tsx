@@ -45,6 +45,13 @@ export default function DocumentWorkspace() {
 
   const highlightRef = useRef<HTMLSpanElement | null>(null);
 
+  // ✅ scroll memory for list
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastScrollTopRef = useRef<number>(0);
+
+  // ✅ prevent single-click handler from interfering with double click UX
+  const clickTimerRef = useRef<number | null>(null);
+
   async function loadDocument() {
     setStatus("Loading document...");
     try {
@@ -113,6 +120,11 @@ export default function DocumentWorkspace() {
     if (!Number.isFinite(docId)) return;
     loadDocument();
     loadSummary();
+
+    // cleanup for click timer
+    return () => {
+      if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId]);
 
@@ -136,7 +148,7 @@ export default function DocumentWorkspace() {
     return segments.find((s) => s.id === selectedSegId) ?? null;
   }, [selectedSegId, segments]);
 
-  // ✅ highlight render based on start/end (fast, no DOM selection API needed)
+  // ✅ highlight render based on start/end
   const highlightedDoc = useMemo(() => {
     if (!docText) return { before: "", mid: "", after: "" };
 
@@ -161,20 +173,49 @@ export default function DocumentWorkspace() {
     highlightRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [selectedSegId]);
 
+  // ✅ restore list scroll when closing viewer
+  useEffect(() => {
+    if (openSeg) return;
+    if (listScrollRef.current) {
+      listScrollRef.current.scrollTop = lastScrollTopRef.current;
+    }
+  }, [openSeg]);
+
   function handleSelect(seg: SegmentDTO) {
-    setSelectedSegId(seg.id);
-    // δεν ανοίγει viewer εδώ (single click)
+    // Delay single click slightly so double click can cancel it.
+    if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
+
+    clickTimerRef.current = window.setTimeout(() => {
+      setSelectedSegId(seg.id);
+      // single click does NOT open viewer
+    }, 170);
   }
 
   function handleOpen(seg: SegmentDTO) {
+    // double click: cancel pending single click handler
+    if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
+
     setSelectedSegId(seg.id);
+
+    // save scroll before opening
+    if (listScrollRef.current) {
+      lastScrollTopRef.current = listScrollRef.current.scrollTop;
+    }
     setOpenSeg(seg);
   }
 
   return (
     <div style={{ height: "100vh", background: "#0b0e14", color: "#eaeaea" }}>
       {/* Top bar */}
-      <div style={{ padding: 14, borderBottom: "1px solid rgba(255,255,255,0.10)", display: "flex", alignItems: "center", gap: 12 }}>
+      <div
+        style={{
+          padding: 14,
+          borderBottom: "1px solid rgba(255,255,255,0.10)",
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+        }}
+      >
         <b style={{ fontSize: 16 }}>Document #{docId}</b>
         <span style={{ opacity: 0.7 }}>{filename ?? "—"}</span>
         <div style={{ flex: 1 }} />
@@ -304,7 +345,11 @@ export default function DocumentWorkspace() {
                   color: "#eaeaea",
                 }}
               />
-              <button onClick={() => setQuery("")} disabled={!query} style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}>
+              <button
+                onClick={() => setQuery("")}
+                disabled={!query}
+                style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}
+              >
                 Clear
               </button>
             </div>
@@ -314,7 +359,7 @@ export default function DocumentWorkspace() {
           <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
             {/* List OR Viewer (toggle) */}
             {!openSeg ? (
-              <div style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+              <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
                 <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
                   <span>Chunks</span>
                   <span style={{ opacity: 0.7, fontWeight: 400 }}>
@@ -333,8 +378,8 @@ export default function DocumentWorkspace() {
                       return (
                         <div
                           key={s.id}
-                          onClick={() => handleSelect(s)}          // ✅ single click select
-                          onDoubleClick={() => handleOpen(s)}     // ✅ double click open
+                          onClick={() => handleSelect(s)} // ✅ single click select
+                          onDoubleClick={() => handleOpen(s)} // ✅ double click open
                           title="Click to select & highlight. Double-click to open."
                           style={{
                             cursor: "pointer",
@@ -373,10 +418,10 @@ export default function DocumentWorkspace() {
                     {openSeg.orderIndex + 1}. {openSeg.title}
                   </b>
                   <button
-                    onClick={() => setOpenSeg(null)} // ✅ close viewer -> back to list
+                    onClick={() => setOpenSeg(null)} // ✅ close viewer -> restores scroll
                     style={{ padding: "8px 10px" }}
                   >
-                    Close
+                    Back to list
                   </button>
                 </div>
 
@@ -388,7 +433,7 @@ export default function DocumentWorkspace() {
           </div>
 
           <div style={{ padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, opacity: 0.7 }}>
-            Tip: Click = highlight in document. Double-click = open chunk viewer.
+            Tip: Click = highlight in document. Double-click = open chunk viewer (Back keeps your scroll).
           </div>
         </div>
       </div>

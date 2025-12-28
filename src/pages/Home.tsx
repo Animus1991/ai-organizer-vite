@@ -1,7 +1,8 @@
 // src/pages/Home.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
-import { authFetch, listSegments, segmentDocument } from "../lib/api";
+import { authFetch, listSegments, segmentDocument, listSegmentations, deleteSegments } from "../lib/api";
+import { useNavigate } from "react-router-dom";
 
 type SegmentRow = {
   id: number;
@@ -30,8 +31,32 @@ type UploadResponse = {
   deduped?: boolean;
 };
 
+type SegSummaryRow = {
+  mode: "qa" | "paragraphs";
+  count: number;
+  lastSegmentedAt?: string | null;
+};
+
+function preview120(s: string) {
+  const oneLine = (s ?? "").replace(/\s+/g, " ").trim();
+  return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
+}
+
+function safeFileName(name: string) {
+  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120).trim() || "export";
+}
+
+function fmt(dt?: string | null) {
+  if (!dt) return "—";
+  const d = new Date(dt);
+  return isNaN(d.getTime()) ? dt : d.toLocaleString();
+}
+
 export default function Home() {
   const { user, logout } = useAuth();
+  const nav = useNavigate();
+
+  const [segSummary, setSegSummary] = useState<SegSummaryRow[]>([]);
 
   const [file, setFile] = useState<File | null>(null);
   const [documentId, setDocumentId] = useState<number | null>(null);
@@ -47,6 +72,10 @@ export default function Home() {
   // side panel state
   const [openSeg, setOpenSeg] = useState<SegmentRow | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // QoL state
+  const [query, setQuery] = useState("");
+  const [modeFilter, setModeFilter] = useState<"all" | "qa" | "paragraphs">("all");
 
   async function fetchUploads() {
     setLoadingUploads(true);
@@ -64,9 +93,27 @@ export default function Home() {
     }
   }
 
+  async function loadSegmentationSummary(docId: number) {
+    try {
+      const rows = await listSegmentations(docId);
+      setSegSummary(Array.isArray(rows) ? (rows as SegSummaryRow[]) : []);
+    } catch {
+      setSegSummary([]);
+    }
+  }
+
+  // ⛳ πιο “ήπιο”: φορτώνουμε uploads όταν υπάρχει user (μειώνει 401 spam σε αρχικό render)
   useEffect(() => {
-    fetchUploads();
-  }, []);
+    if (user) fetchUploads();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  // load segmentation summary when document changes
+  useEffect(() => {
+    if (documentId) loadSegmentationSummary(documentId);
+    else setSegSummary([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [documentId]);
 
   const selectedUpload = useMemo(() => {
     if (!documentId) return null;
@@ -78,6 +125,17 @@ export default function Home() {
     const hit = uploads.find((u) => u.filename === file.name && u.sizeBytes === file.size);
     return hit ?? null;
   }, [file, uploads]);
+
+  const filteredSegments = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return segments.filter((s) => {
+      const modeOk = modeFilter === "all" ? true : s.mode === modeFilter;
+      if (!modeOk) return false;
+      if (!q) return true;
+      const hay = `${s.title ?? ""} ${s.content ?? ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [segments, query, modeFilter]);
 
   async function uploadFile() {
     if (!file) return;
@@ -130,6 +188,8 @@ export default function Home() {
 
     try {
       const data = await segmentDocument(documentId, mode);
+      await loadSegmentationSummary(documentId);
+
       const count = extractCount(data);
       setStatus(count !== null ? `Segmented: ${count} segments` : `Segment response: ${JSON.stringify(data)}`);
     } catch (e: any) {
@@ -144,8 +204,9 @@ export default function Home() {
     setOpenSeg(null);
 
     try {
-      const items = await listSegments(documentId);
-      setSegments(items);
+      const items = await listSegments(documentId, mode);
+      setModeFilter(mode);
+      setSegments(items as any);
       setStatus(`Loaded ${items.length} segments`);
     } catch (e: any) {
       setStatus(e?.message ?? "List failed");
@@ -177,28 +238,53 @@ export default function Home() {
       setStatus(`Deleted uploadId=${selectedUpload.uploadId}`);
       setDocumentId(null);
       setSegments([]);
+      setSegSummary([]);
       setOpenSeg(null);
+      setQuery("");
+      setModeFilter("all");
       await fetchUploads();
     } finally {
       setDeleting(false);
     }
   }
 
-  function preview120(s: string) {
-    const oneLine = (s ?? "").replace(/\s+/g, " ").trim();
-    return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
-  }
-
-  async function copyOpenSegment() {
+  async function copyOpenSegment(withTitle: boolean) {
     if (!openSeg) return;
+    const text = withTitle ? `${openSeg.title}\n\n${openSeg.content ?? ""}` : openSeg.content ?? "";
     try {
-      await navigator.clipboard.writeText(openSeg.content ?? "");
+      await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 900);
     } catch {
       setStatus("Copy failed (clipboard blocked by browser).");
     }
   }
+
+  function exportOpenSegmentTxt() {
+    if (!openSeg) return;
+
+    const docLabel = selectedUpload?.filename ? safeFileName(selectedUpload.filename) : `doc_${documentId ?? "unknown"}`;
+    const segLabel = safeFileName(`${openSeg.orderIndex + 1}_${openSeg.title || "segment"}`);
+    const fileName = `${docLabel}__${segLabel}.txt`;
+
+    const content = `${openSeg.title}\n(mode: ${openSeg.mode}, order: ${openSeg.orderIndex + 1})\n\n${openSeg.content ?? ""}\n`;
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 300);
+  }
+
+  const segSummaryByMode = useMemo(() => {
+    const map: Record<string, SegSummaryRow> = {};
+    for (const row of segSummary) map[row.mode] = row;
+    return map;
+  }, [segSummary]);
 
   return (
     <div style={{ maxWidth: 1100, margin: "40px auto", color: "#eaeaea", padding: "0 16px" }}>
@@ -219,6 +305,8 @@ export default function Home() {
             setDocumentId(v ? Number(v) : null);
             setSegments([]);
             setOpenSeg(null);
+            setQuery("");
+            setModeFilter("all");
           }}
           style={{ minWidth: 520 }}
         >
@@ -246,7 +334,63 @@ export default function Home() {
         >
           {deleting ? "Deleting..." : "Delete selected"}
         </button>
+
+        <button
+          onClick={() => {
+            if (!documentId) return;
+            nav(`/documents/${documentId}`, {
+              state: { filename: selectedUpload?.filename ?? null },
+            });
+          }}
+          disabled={!documentId}
+          style={{
+            padding: "8px 12px",
+            opacity: !documentId ? 0.6 : 1,
+            cursor: !documentId ? "not-allowed" : "pointer",
+          }}
+        >
+          Open document workspace
+        </button>
+
       </div>
+
+      {/* Segmentation summary */}
+      {documentId && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: 12,
+            border: "1px solid #3a3a3a",
+            borderRadius: 10,
+            background: "rgba(255,255,255,0.03)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            <b>Segmentation summary</b>
+            <button
+              onClick={() => loadSegmentationSummary(documentId)}
+              style={{ padding: "6px 10px", opacity: 0.9 }}
+            >
+              Refresh summary
+            </button>
+          </div>
+
+          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+            {(["qa", "paragraphs"] as const).map((m) => {
+              const row = segSummaryByMode[m];
+              const count = row?.count ?? 0;
+              const last = row?.lastSegmentedAt ?? null;
+              return (
+                <div key={m} style={{ opacity: 0.92 }}>
+                  <span style={{ fontWeight: 700 }}>{m}</span>{" "}
+                  <span style={{ opacity: 0.85 }}>({count})</span>
+                  <span style={{ opacity: 0.7 }}> — last segmented: {fmt(last)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <hr style={{ margin: "24px 0" }} />
 
@@ -282,11 +426,56 @@ export default function Home() {
 
       <p style={{ marginTop: 12, opacity: 0.85 }}>{status}</p>
 
-      {/* Segments table */}
+      {/* Segments table + QoL */}
       <div style={{ marginTop: 18, border: "1px solid #3a3a3a", borderRadius: 10, overflow: "hidden" }}>
-        <div style={{ padding: 12, borderBottom: "1px solid #3a3a3a", display: "flex", justifyContent: "space-between" }}>
-          <b>Segments</b>
-          <span style={{ opacity: 0.7 }}>{segments.length ? `${segments.length} items` : "—"}</span>
+        <div style={{ padding: 12, borderBottom: "1px solid #3a3a3a" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <b>Segments</b>
+            <span style={{ opacity: 0.7 }}>{segments.length ? `${filteredSegments.length}/${segments.length} shown` : "—"}</span>
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search in title/content…"
+              style={{
+                minWidth: 320,
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid #444",
+                background: "#0f0f0f",
+                color: "#eaeaea",
+              }}
+            />
+
+            <select
+              value={modeFilter}
+              onChange={(e) => setModeFilter(e.target.value as any)}
+              style={{
+                padding: "8px 10px",
+                borderRadius: 8,
+                border: "1px solid #444",
+                background: "#0f0f0f",
+                color: "#eaeaea",
+              }}
+            >
+              <option value="all">All modes</option>
+              <option value="qa">qa</option>
+              <option value="paragraphs">paragraphs</option>
+            </select>
+
+            <button
+              onClick={() => {
+                setQuery("");
+                setModeFilter("all");
+              }}
+              disabled={!query && modeFilter === "all"}
+              style={{ padding: "8px 10px", opacity: !query && modeFilter === "all" ? 0.6 : 1 }}
+            >
+              Clear
+            </button>
+          </div>
         </div>
 
         <div style={{ overflowX: "auto" }}>
@@ -306,8 +495,14 @@ export default function Home() {
                     No segments loaded yet. Click <b>List Segments</b>.
                   </td>
                 </tr>
+              ) : !filteredSegments.length ? (
+                <tr>
+                  <td colSpan={4} style={{ padding: 14, opacity: 0.7 }}>
+                    No results for this search/filter.
+                  </td>
+                </tr>
               ) : (
-                segments.map((s) => {
+                filteredSegments.map((s) => {
                   const isActive = openSeg?.id === s.id;
                   return (
                     <tr
@@ -318,16 +513,12 @@ export default function Home() {
                         background: isActive ? "rgba(114,255,191,0.10)" : "transparent",
                       }}
                     >
-                      <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f", opacity: 0.9 }}>
-                        {s.orderIndex + 1}
-                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f", opacity: 0.9 }}>{s.orderIndex + 1}</td>
                       <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f", opacity: 0.75 }}>{s.mode}</td>
                       <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f" }}>
                         <b>{s.title}</b>
                       </td>
-                      <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f", opacity: 0.85 }}>
-                        {preview120(s.content)}
-                      </td>
+                      <td style={{ padding: 10, borderBottom: "1px solid #2f2f2f", opacity: 0.85 }}>{preview120(s.content)}</td>
                     </tr>
                   );
                 })
@@ -340,7 +531,6 @@ export default function Home() {
       {/* Side panel */}
       {openSeg && (
         <>
-          {/* backdrop */}
           <div
             onClick={() => setOpenSeg(null)}
             style={{
@@ -373,11 +563,24 @@ export default function Home() {
                 <div style={{ opacity: 0.7, fontSize: 12 }}>mode: {openSeg.mode}</div>
               </div>
 
-              <button onClick={copyOpenSegment} style={{ padding: "8px 10px" }}>
+              <button onClick={() => copyOpenSegment(false)} style={{ padding: "8px 10px" }}>
                 {copied ? "Copied!" : "Copy"}
               </button>
+
+              <button onClick={() => copyOpenSegment(true)} style={{ padding: "8px 10px" }}>
+                Copy Title+Text
+              </button>
+
+              <button onClick={exportOpenSegmentTxt} style={{ padding: "8px 10px" }}>
+                Export .txt
+              </button>
+
               <button onClick={() => setOpenSeg(null)} style={{ padding: "8px 10px" }}>
                 Close
+              </button>
+
+              <button onClick={() => nav(`/segments/${openSeg.id}`)} style={{ padding: "8px 10px" }}>
+                Open details
               </button>
             </div>
 
