@@ -1,11 +1,10 @@
 # backend/src/ai_organizer/models.py
-# from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import UniqueConstraint
-from sqlmodel import SQLModel, Field, Relationship, Column, DateTime, func
+from sqlmodel import SQLModel, Field, Relationship
 
 
 class User(SQLModel, table=True):
@@ -13,13 +12,11 @@ class User(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
-    # unique email (DB-level)
     email: str = Field(index=True, sa_column_kwargs={"unique": True})
     password_hash: str
 
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
-    # Relationships (ORM-level cascades)
     uploads: list["Upload"] = Relationship(
         back_populates="user",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
@@ -64,7 +61,7 @@ class Document(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True)
 
     title: str
-    source_type: str  # "chatgpt_json" | "text" | "md" | "pdf" | ...
+    source_type: str
     text: str
 
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
@@ -84,9 +81,9 @@ class Document(SQLModel, table=True):
 class Segment(SQLModel, table=True):
     __tablename__ = "segments"
 
-    # Prevent duplicates: same document_id + same order_index not allowed
+    # ✅ σωστό: uniqueness ανά mode (για να μη συγκρούεται auto με manual)
     __table_args__ = (
-        UniqueConstraint("document_id", "order_index", name="uq_segment_doc_order"),
+        UniqueConstraint("document_id", "mode", "order_index", name="uq_segment_doc_mode_order"),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -94,12 +91,15 @@ class Segment(SQLModel, table=True):
     document_id: int = Field(foreign_key="documents.id", index=True)
     order_index: int = Field(index=True)
 
-    mode: str  # "qa" | "date_blocks" | "keywords" | ...
+    mode: str  # "qa" | "paragraphs"
     title: str = Field(default="", nullable=False)
     content: str
 
     start_char: int = Field(default=0, nullable=False)
     end_char: int = Field(default=0, nullable=False)
+
+    # ✅ ΝΕΟ: manual marker
+    is_manual: bool = Field(default=False, index=True)
 
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
