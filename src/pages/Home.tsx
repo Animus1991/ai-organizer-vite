@@ -1,7 +1,16 @@
 // src/pages/Home.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthProvider";
-import { authFetch, listSegments, segmentDocument, listSegmentations, deleteSegments } from "../lib/api";
+import {
+  listUploads,
+  uploadFile as apiUploadFile,
+  listSegments,
+  segmentDocument,
+  listSegmentations,
+  deleteUpload,
+  UploadItemDTO,
+  UploadResponseDTO,
+} from "../lib/api";
 import { useNavigate } from "react-router-dom";
 
 type SegmentRow = {
@@ -13,22 +22,6 @@ type SegmentRow = {
   start?: number;
   end?: number;
   createdAt?: string | null;
-};
-
-type UploadItem = {
-  uploadId: number;
-  documentId: number;
-  filename: string;
-  sizeBytes: number;
-  contentType: string;
-};
-
-type UploadResponse = {
-  uploadId: number;
-  documentId: number;
-  sourceType: string;
-  filename: string;
-  deduped?: boolean;
 };
 
 type SegSummaryRow = {
@@ -52,6 +45,13 @@ function fmt(dt?: string | null) {
   return isNaN(d.getTime()) ? dt : d.toLocaleString();
 }
 
+function statusBadge(parseStatus?: string) {
+  if (parseStatus === "ok") return "✅ ok";
+  if (parseStatus === "failed") return "⛔ failed";
+  if (parseStatus === "pending") return "⏳ pending";
+  return parseStatus ? `• ${parseStatus}` : "—";
+}
+
 export default function Home() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -65,9 +65,10 @@ export default function Home() {
   const [segments, setSegments] = useState<SegmentRow[]>([]);
   const [status, setStatus] = useState<string>("");
 
-  const [uploads, setUploads] = useState<UploadItem[]>([]);
+  const [uploads, setUploads] = useState<UploadItemDTO[]>([]);
   const [loadingUploads, setLoadingUploads] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   // side panel state
   const [openSeg, setOpenSeg] = useState<SegmentRow | null>(null);
@@ -80,14 +81,10 @@ export default function Home() {
   async function fetchUploads() {
     setLoadingUploads(true);
     try {
-      const res = await authFetch("/uploads");
-      if (!res.ok) {
-        const txt = await res.text();
-        setStatus(`Failed to load uploads: ${res.status} ${txt}`);
-        return;
-      }
-      const data = await res.json();
+      const data = await listUploads();
       setUploads(Array.isArray(data) ? data : []);
+    } catch (e: any) {
+      setStatus(e?.message ?? "Failed to load uploads");
     } finally {
       setLoadingUploads(false);
     }
@@ -102,13 +99,11 @@ export default function Home() {
     }
   }
 
-  // ⛳ πιο “ήπιο”: φορτώνουμε uploads όταν υπάρχει user (μειώνει 401 spam σε αρχικό render)
   useEffect(() => {
     if (user) fetchUploads();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
-  // load segmentation summary when document changes
   useEffect(() => {
     if (documentId) loadSegmentationSummary(documentId);
     else setSegSummary([]);
@@ -126,6 +121,11 @@ export default function Home() {
     return hit ?? null;
   }, [file, uploads]);
 
+  const canSegment = useMemo(() => {
+    if (!selectedUpload) return false;
+    return selectedUpload.parseStatus === "ok";
+  }, [selectedUpload]);
+
   const filteredSegments = useMemo(() => {
     const q = query.trim().toLowerCase();
     return segments.filter((s) => {
@@ -137,34 +137,35 @@ export default function Home() {
     });
   }, [segments, query, modeFilter]);
 
-  async function uploadFile() {
+  async function doUpload() {
     if (!file) return;
 
+    setUploading(true);
     setStatus("Uploading...");
-    const form = new FormData();
-    form.append("file", file);
+    setOpenSeg(null);
 
-    const res = await authFetch("/upload", {
-      method: "POST",
-      body: form,
-    });
+    try {
+      const data: UploadResponseDTO = await apiUploadFile(file);
+      setDocumentId(data.documentId);
 
-    if (!res.ok) {
-      const txt = await res.text();
-      setStatus(`Upload failed: ${res.status} ${txt}`);
-      return;
+      if (data.parseStatus === "failed") {
+        setStatus(
+          `Uploaded, but parse FAILED (${data.filename}). Reason: ${data.parseError ?? "unknown error"}`
+        );
+      } else if (data.deduped) {
+        setStatus(
+          `Already uploaded (deduped). Using documentId=${data.documentId} • ${statusBadge(data.parseStatus)}`
+        );
+      } else {
+        setStatus(`Uploaded. documentId=${data.documentId} • ${statusBadge(data.parseStatus)}`);
+      }
+
+      await fetchUploads();
+    } catch (e: any) {
+      setStatus(e?.message ?? "Upload failed");
+    } finally {
+      setUploading(false);
     }
-
-    const data: UploadResponse = await res.json();
-    setDocumentId(data.documentId);
-
-    if (data.deduped) {
-      setStatus(`Already uploaded (deduped). Using documentId=${data.documentId}`);
-    } else {
-      setStatus(`Uploaded. documentId=${data.documentId}`);
-    }
-
-    await fetchUploads();
   }
 
   function extractCount(payload: any): number | null {
@@ -182,6 +183,13 @@ export default function Home() {
 
   async function segmentDoc() {
     if (!documentId) return;
+
+    if (!canSegment) {
+      setStatus(
+        `Cannot segment: document parseStatus is "${selectedUpload?.parseStatus}". Fix upload/parse first.`
+      );
+      return;
+    }
 
     setStatus("Segmenting...");
     setOpenSeg(null);
@@ -225,15 +233,7 @@ export default function Home() {
     setStatus("Deleting upload...");
 
     try {
-      const res = await authFetch(`/uploads/${selectedUpload.uploadId}`, {
-        method: "DELETE",
-      });
-
-      if (!res.ok) {
-        const txt = await res.text();
-        setStatus(`Delete failed: ${res.status} ${txt}`);
-        return;
-      }
+      await deleteUpload(selectedUpload.uploadId);
 
       setStatus(`Deleted uploadId=${selectedUpload.uploadId}`);
       setDocumentId(null);
@@ -243,6 +243,8 @@ export default function Home() {
       setQuery("");
       setModeFilter("all");
       await fetchUploads();
+    } catch (e: any) {
+      setStatus(e?.message ?? "Delete failed");
     } finally {
       setDeleting(false);
     }
@@ -296,7 +298,7 @@ export default function Home() {
 
       <hr style={{ margin: "24px 0" }} />
 
-      <h2>Pick existing document (no duplicates)</h2>
+      <h2>Pick existing document</h2>
       <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
         <select
           value={documentId ?? ""}
@@ -313,7 +315,7 @@ export default function Home() {
           <option value="">-- Select uploaded document --</option>
           {uploads.map((u) => (
             <option key={u.documentId} value={u.documentId}>
-              {u.filename} (docId={u.documentId})
+              {u.filename} • {statusBadge(u.parseStatus)} (docId={u.documentId})
             </option>
           ))}
         </select>
@@ -351,8 +353,44 @@ export default function Home() {
         >
           Open document workspace
         </button>
-
       </div>
+
+      {/* Parse details */}
+      {selectedUpload && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: "1px solid #3a3a3a",
+            borderRadius: 10,
+            background: "rgba(255,255,255,0.03)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <b>Parse status:</b> {statusBadge(selectedUpload.parseStatus)}
+              {selectedUpload.parseStatus === "failed" && selectedUpload.parseError ? (
+                <div style={{ marginTop: 8, color: "#ffb3b3", whiteSpace: "pre-wrap" }}>
+                  <b>Parse error:</b> {selectedUpload.parseError}
+                </div>
+              ) : null}
+            </div>
+
+            <div style={{ opacity: 0.75 }}>
+              <div>
+                <b>Type:</b> {selectedUpload.contentType}
+              </div>
+              <div>
+                <b>Size:</b> {selectedUpload.sizeBytes.toLocaleString()} bytes
+              </div>
+            </div>
+          </div>
+
+          <div style={{ marginTop: 10, opacity: 0.75 }}>
+            Supported for now: <b>.txt .md .json (ChatGPT export) .docx</b> • Not supported: <b>.doc</b> (upload .docx).
+          </div>
+        </div>
+      )}
 
       {/* Segmentation summary */}
       {documentId && (
@@ -367,10 +405,7 @@ export default function Home() {
         >
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <b>Segmentation summary</b>
-            <button
-              onClick={() => loadSegmentationSummary(documentId)}
-              style={{ padding: "6px 10px", opacity: 0.9 }}
-            >
+            <button onClick={() => loadSegmentationSummary(documentId)} style={{ padding: "6px 10px", opacity: 0.9 }}>
               Refresh summary
             </button>
           </div>
@@ -382,8 +417,7 @@ export default function Home() {
               const last = row?.lastSegmentedAt ?? null;
               return (
                 <div key={m} style={{ opacity: 0.92 }}>
-                  <span style={{ fontWeight: 700 }}>{m}</span>{" "}
-                  <span style={{ opacity: 0.85 }}>({count})</span>
+                  <span style={{ fontWeight: 700 }}>{m}</span> <span style={{ opacity: 0.85 }}>({count})</span>
                   <span style={{ opacity: 0.7 }}> — last segmented: {fmt(last)}</span>
                 </div>
               );
@@ -397,14 +431,13 @@ export default function Home() {
       <h2>Upload → Segment → List</h2>
 
       <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-      <button onClick={uploadFile} disabled={!file} style={{ marginLeft: 10 }}>
-        Upload
+      <button onClick={doUpload} disabled={!file || uploading} style={{ marginLeft: 10 }}>
+        {uploading ? "Uploading..." : "Upload"}
       </button>
 
       {localDuplicateHint && (
         <p style={{ marginTop: 10, color: "#ffcc66" }}>
-          Hint: This looks already uploaded as <b>docId={localDuplicateHint.documentId}</b>. Select it from the dropdown
-          to avoid duplicates.
+          Hint: This looks already uploaded as <b>docId={localDuplicateHint.documentId}</b>. Select it from the dropdown to avoid duplicates.
         </p>
       )}
 
@@ -415,7 +448,12 @@ export default function Home() {
           <option value="paragraphs">paragraphs</option>
         </select>
 
-        <button onClick={segmentDoc} disabled={!documentId} style={{ marginLeft: 10 }}>
+        <button
+          onClick={segmentDoc}
+          disabled={!documentId || !canSegment}
+          style={{ marginLeft: 10, opacity: !documentId || !canSegment ? 0.6 : 1 }}
+          title={!canSegment ? "Document must be parseStatus=ok to segment." : ""}
+        >
           Segment
         </button>
 

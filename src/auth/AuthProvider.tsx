@@ -1,6 +1,12 @@
 // src/auth/AuthProvider.tsx
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { http, clearTokens, getAccessToken, getRefreshToken, setTokens } from "../api/http";
+import {
+  clearTokens,
+  getAccessToken,
+  getRefreshToken,
+  login as apiLogin,
+  logout as apiLogout,
+} from "../lib/api";
 
 type AuthUser = { email: string } | null;
 
@@ -21,12 +27,6 @@ export function useAuth() {
   return ctx;
 }
 
-type LoginResponse = {
-  access_token: string;
-  refresh_token: string;
-  token_type: "bearer" | string;
-};
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser>(null);
   const [loading, setLoading] = useState(false);
@@ -34,82 +34,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function login(email: string, password: string) {
     setLoading(true);
     try {
-      // Swagger: application/x-www-form-urlencoded
-      // grant_type=password&username=...&password=...
-      const form = new URLSearchParams();
-      form.set("grant_type", "password");
-      form.set("username", email.trim());
-      form.set("password", password);
-
-      const res = await http.post<LoginResponse>("/api/auth/login", form, {
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Accept: "application/json",
-        },
-      });
-
-      const access = res.data?.access_token;
-      const refresh = res.data?.refresh_token;
-
-      if (!access || !refresh) {
-        throw new Error("Login response missing tokens");
-      }
-
-      setTokens(access, refresh);
-
-      // ΜΗΝ εξαρτάσαι από /api/auth/me (δεν φαίνεται στο Swagger)
-      // set user άμεσα από το email που έδωσε ο χρήστης:
+      await apiLogin(email.trim(), password);
+      // δεν βασιζόμαστε σε /me
       setUser({ email: email.trim() });
-
-      // Αν υπάρχει /api/auth/me, μπορούμε να το δοκιμάσουμε προαιρετικά:
-      await refreshMe().catch(() => {});
     } finally {
       setLoading(false);
     }
   }
 
   async function refreshMe() {
-    if (!getAccessToken()) {
-      setUser(null);
-      return;
-    }
-
-    // Αν ΔΕΝ έχεις /api/auth/me στο backend, αυτό θα 404.
-    // Το πιάνουμε και απλά δεν κάνουμε override το user.
-    try {
-      const res = await http.get("/api/auth/me", {
-        headers: { Accept: "application/json" },
-      });
-
-      const email =
-        (res.data as any)?.email ||
-        (res.data as any)?.username ||
-        (res.data as any)?.user?.email ||
-        null;
-
-      if (email) setUser({ email });
-    } catch {
-      // no-op (κρατάμε ό,τι user είχαμε)
-    }
+    // Δεν έχεις /api/auth/me στο backend (ή δεν το χρησιμοποιούμε εδώ).
+    // Άρα κρατάμε ό,τι email έχουμε, αλλιώς αν υπάρχει token, θεωρούμαστε authed.
+    if (!getAccessToken()) setUser(null);
   }
 
   async function logout() {
     setLoading(true);
     try {
       const refreshToken = getRefreshToken();
-
-      // Swagger δείχνει JSON request body required για logout
-      if (refreshToken) {
-        try {
-          await http.post(
-            "/api/auth/logout",
-            { refresh_token: refreshToken },
-            { headers: { "Content-Type": "application/json", Accept: "application/json" } }
-          );
-        } catch {
-          // no-op
-        }
-      }
+      await apiLogout(refreshToken).catch(() => {});
     } finally {
       clearTokens();
       setUser(null);
@@ -117,10 +60,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  // On mount: αν υπάρχει token, τουλάχιστον κράτα "authed" state και δοκίμασε (optional) refreshMe
   useEffect(() => {
     if (getAccessToken()) {
-      refreshMe().catch(() => {});
+      // Αν ο χρήστης κάνει refresh, δεν ξέρουμε το email (εκτός αν το αποθηκεύεις).
+      // Για MVP: authed=true αρκεί. user θα φαίνεται ως unknown.
+      // Αν θες, μπορούμε να αποθηκεύουμε email στο localStorage.
+      setUser((u) => u ?? { email: "unknown" });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

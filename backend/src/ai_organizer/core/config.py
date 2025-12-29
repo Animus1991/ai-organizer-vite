@@ -21,7 +21,9 @@ def _as_posix(p: Path) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    AIORG_CORS_ORIGINS: str = field(default_factory=lambda: os.getenv("AIORG_CORS_ORIGINS", "http://localhost:5173"))
+    AIORG_CORS_ORIGINS: str = field(
+        default_factory=lambda: os.getenv("AIORG_CORS_ORIGINS", "http://localhost:5173")
+    )
     AIORG_HOST: str = field(default_factory=lambda: os.getenv("AIORG_HOST", "127.0.0.1"))
     AIORG_PORT: int = field(default_factory=lambda: int(os.getenv("AIORG_PORT", "8000")))
 
@@ -33,11 +35,15 @@ class Settings:
     # Filled in __post_init__
     AIORG_DATA_DIR: Path = field(init=False)
     AIORG_UPLOAD_DIR: Path = field(init=False)
+    AIORG_PROCESSED_DIR: Path = field(init=False)
     AIORG_DB_URL: str = field(init=False)
 
     def __post_init__(self) -> None:
         data_dir = Path(os.getenv("AIORG_DATA_DIR", str((BACKEND_DIR / "data").resolve()))).resolve()
         upload_dir = Path(os.getenv("AIORG_UPLOAD_DIR", str((data_dir / "uploads").resolve()))).resolve()
+        processed_dir = Path(
+            os.getenv("AIORG_PROCESSED_DIR", str((data_dir / "processed").resolve()))
+        ).resolve()
 
         db_url = os.getenv("AIORG_DB_URL", "").strip()
         if not db_url:
@@ -46,9 +52,11 @@ class Settings:
 
         object.__setattr__(self, "AIORG_DATA_DIR", data_dir)
         object.__setattr__(self, "AIORG_UPLOAD_DIR", upload_dir)
+        object.__setattr__(self, "AIORG_PROCESSED_DIR", processed_dir)
         object.__setattr__(self, "AIORG_DB_URL", db_url)
 
 
 settings = Settings()
 settings.AIORG_DATA_DIR.mkdir(parents=True, exist_ok=True)
 settings.AIORG_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+settings.AIORG_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)

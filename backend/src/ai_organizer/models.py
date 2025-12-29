@@ -69,6 +69,10 @@ class Document(SQLModel, table=True):
     user: Optional["User"] = Relationship(back_populates="documents")
     upload: Optional["Upload"] = Relationship(back_populates="documents")
 
+    parse_status: str = Field(default="pending", index=True)
+    parse_error: Optional[str] = Field(default=None)
+    processed_path: Optional[str] = Field(default=None)
+
     segments: list["Segment"] = Relationship(
         back_populates="document",
         sa_relationship_kwargs={

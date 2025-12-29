@@ -9,6 +9,8 @@ import {
   segmentDocument,
   SegmentDTO,
   SegmentationSummary,
+  createManualSegment,
+  deleteSegment,
 } from "../lib/api";
 
 function fmt(dt?: string | null) {
@@ -22,6 +24,16 @@ function preview120(s: string) {
   return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
 }
 
+type SourceFilter = "all" | "auto" | "manual";
+type SelInfo = { start: number; end: number; text: string };
+
+function badge(parseStatus?: string) {
+  if (parseStatus === "ok") return "✅ ok";
+  if (parseStatus === "failed") return "⛔ failed";
+  if (parseStatus === "pending") return "⏳ pending";
+  return parseStatus ? `• ${parseStatus}` : "—";
+}
+
 export default function DocumentWorkspace() {
   const nav = useNavigate();
   const { documentId } = useParams();
@@ -32,25 +44,42 @@ export default function DocumentWorkspace() {
   const [docText, setDocText] = useState<string>("");
   const [filename, setFilename] = useState<string | null>(location?.state?.filename ?? null);
 
+  // ✅ ingest fields
+  const [parseStatus, setParseStatus] = useState<string>("pending");
+  const [parseError, setParseError] = useState<string | null>(null);
+  const [sourceType, setSourceType] = useState<string | null>(null);
+
   const [summary, setSummary] = useState<SegmentationSummary[]>([]);
   const [mode, setMode] = useState<"qa" | "paragraphs">("qa");
   const [segments, setSegments] = useState<SegmentDTO[]>([]);
   const [query, setQuery] = useState("");
 
-  // ✅ 1-click selection (for highlight)
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
+
+  // selection / viewer
   const [selectedSegId, setSelectedSegId] = useState<number | null>(null);
-
-  // ✅ 2-click open viewer (full chunk view)
   const [openSeg, setOpenSeg] = useState<SegmentDTO | null>(null);
-
   const highlightRef = useRef<HTMLSpanElement | null>(null);
 
-  // ✅ scroll memory for list
+  // list scroll memory
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   const lastScrollTopRef = useRef<number>(0);
-
-  // ✅ prevent single-click handler from interfering with double click UX
   const clickTimerRef = useRef<number | null>(null);
+
+  // manual modal
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualTitle, setManualTitle] = useState("");
+  const manualPreRef = useRef<HTMLPreElement | null>(null);
+  const [manualSel, setManualSel] = useState<SelInfo | null>(null);
+  const [manualStatus, setManualStatus] = useState<string>("");
+
+  // manual modal viewer
+  const [manualOpenSeg, setManualOpenSeg] = useState<SegmentDTO | null>(null);
+  const manualListScrollRef = useRef<HTMLDivElement | null>(null);
+  const manualLastScrollTopRef = useRef<number>(0);
+  const manualClickTimerRef = useRef<number | null>(null);
+
+  const canSegment = parseStatus === "ok";
 
   async function loadDocument() {
     setStatus("Loading document...");
@@ -58,6 +87,11 @@ export default function DocumentWorkspace() {
       const d = await getDocument(docId);
       setDocText(d.text ?? "");
       if (!filename && d.filename) setFilename(d.filename);
+
+      setParseStatus(d.parse_status ?? "pending");
+      setParseError((d.parse_error as any) ?? null);
+      setSourceType((d.source_type as any) ?? null);
+
       setStatus("");
     } catch (e: any) {
       setStatus(`Failed to load document: ${e?.message ?? String(e)}`);
@@ -88,6 +122,11 @@ export default function DocumentWorkspace() {
   }
 
   async function runSegmentation() {
+    if (!canSegment) {
+      setStatus(`Cannot segment: parseStatus="${parseStatus}". Fix upload/parse first.`);
+      return;
+    }
+
     setStatus("Segmenting...");
     try {
       await segmentDocument(docId, mode);
@@ -100,17 +139,34 @@ export default function DocumentWorkspace() {
   }
 
   async function deleteModeSegments() {
-    const ok = window.confirm(`Delete segments for mode "${mode}"?`);
+    const ok = window.confirm(`Delete AUTO segments for mode "${mode}"? (Manual chunks will stay)`);
     if (!ok) return;
 
     setStatus("Deleting segments...");
     try {
       await deleteSegments(docId, mode);
       await loadSummary();
-      setSegments([]);
+      await loadSegs(mode);
       setSelectedSegId(null);
       setOpenSeg(null);
-      setStatus(`Deleted segments (${mode}).`);
+      setStatus(`Deleted auto segments (${mode}).`);
+    } catch (e: any) {
+      setStatus(e?.message ?? "Delete failed");
+    }
+  }
+
+  async function handleDeleteSingle(seg: SegmentDTO) {
+    const ok = window.confirm(`Delete chunk: "${seg.title}"?`);
+    if (!ok) return;
+
+    setStatus("Deleting chunk...");
+    try {
+      await deleteSegment(seg.id);
+      setSegments((prev) => prev.filter((x) => x.id !== seg.id));
+      if (selectedSegId === seg.id) setSelectedSegId(null);
+      if (openSeg?.id === seg.id) setOpenSeg(null);
+      setStatus("Chunk deleted.");
+      await loadSummary();
     } catch (e: any) {
       setStatus(e?.message ?? "Delete failed");
     }
@@ -121,9 +177,9 @@ export default function DocumentWorkspace() {
     loadDocument();
     loadSummary();
 
-    // cleanup for click timer
     return () => {
       if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
+      if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docId]);
@@ -134,21 +190,26 @@ export default function DocumentWorkspace() {
     return map;
   }, [summary]);
 
+  const visibleBySource = useMemo(() => {
+    if (sourceFilter === "all") return segments;
+    if (sourceFilter === "manual") return segments.filter((s) => !!s.isManual);
+    return segments.filter((s) => !s.isManual);
+  }, [segments, sourceFilter]);
+
   const filteredSegments = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return segments;
-    return segments.filter((s) => {
+    if (!q) return visibleBySource;
+    return visibleBySource.filter((s) => {
       const hay = `${s.title ?? ""} ${s.content ?? ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [segments, query]);
+  }, [visibleBySource, query]);
 
   const selectedSeg = useMemo(() => {
     if (!selectedSegId) return null;
     return segments.find((s) => s.id === selectedSegId) ?? null;
   }, [selectedSegId, segments]);
 
-  // ✅ highlight render based on start/end
   const highlightedDoc = useMemo(() => {
     if (!docText) return { before: "", mid: "", after: "" };
 
@@ -167,13 +228,11 @@ export default function DocumentWorkspace() {
     };
   }, [docText, selectedSeg]);
 
-  // ✅ scroll highlight into view when selection changes
   useEffect(() => {
     if (!highlightRef.current) return;
     highlightRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [selectedSegId]);
 
-  // ✅ restore list scroll when closing viewer
   useEffect(() => {
     if (openSeg) return;
     if (listScrollRef.current) {
@@ -182,30 +241,125 @@ export default function DocumentWorkspace() {
   }, [openSeg]);
 
   function handleSelect(seg: SegmentDTO) {
-    // Delay single click slightly so double click can cancel it.
     if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
-
     clickTimerRef.current = window.setTimeout(() => {
       setSelectedSegId(seg.id);
-      // single click does NOT open viewer
     }, 170);
   }
 
   function handleOpen(seg: SegmentDTO) {
-    // double click: cancel pending single click handler
     if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
-
     setSelectedSegId(seg.id);
 
-    // save scroll before opening
     if (listScrollRef.current) {
       lastScrollTopRef.current = listScrollRef.current.scrollTop;
     }
     setOpenSeg(seg);
   }
 
+  // ---- Manual modal selection capture ----
+  function computeSelectionFromPre(): SelInfo | null {
+    const pre = manualPreRef.current;
+    if (!pre) return null;
+
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+
+    const range = sel.getRangeAt(0);
+    if (!pre.contains(range.startContainer) || !pre.contains(range.endContainer)) return null;
+
+    const r1 = document.createRange();
+    r1.setStart(pre, 0);
+    r1.setEnd(range.startContainer, range.startOffset);
+    let a = r1.toString().length;
+
+    const r2 = document.createRange();
+    r2.setStart(pre, 0);
+    r2.setEnd(range.endContainer, range.endOffset);
+    let b = r2.toString().length;
+
+    const start = Math.min(a, b);
+    const end = Math.max(a, b);
+    if (end <= start) return null;
+
+    const text = docText.slice(start, end);
+    return { start, end, text };
+  }
+
+  function captureManualSelection() {
+    const info = computeSelectionFromPre();
+    setManualSel(info);
+    setManualStatus(info ? `Selected ${info.end - info.start} chars.` : "No selection.");
+  }
+
+  async function saveManualChunk() {
+    if (!manualSel) {
+      setManualStatus("Pick some text (drag) first.");
+      return;
+    }
+
+    try {
+      setManualStatus("Saving...");
+      const created = await createManualSegment(docId, {
+        mode,
+        title: manualTitle.trim() ? manualTitle.trim() : null,
+        start: manualSel.start,
+        end: manualSel.end,
+      });
+
+      await loadSummary();
+      await loadSegs(mode);
+
+      setSelectedSegId(created.id);
+      setManualStatus(`Saved: ${created.title}`);
+      setManualTitle("");
+      setManualSel(null);
+      setManualOpenSeg(null);
+    } catch (e: any) {
+      setManualStatus(e?.message ?? "Manual save failed");
+    }
+  }
+
+  const manualSegments = useMemo(() => {
+    return segments.filter((s) => !!s.isManual && s.mode === mode);
+  }, [segments, mode]);
+
+  useEffect(() => {
+    if (manualOpenSeg) return;
+    if (manualListScrollRef.current) {
+      manualListScrollRef.current.scrollTop = manualLastScrollTopRef.current;
+    }
+  }, [manualOpenSeg]);
+
+  function manualHandleSelect(seg: SegmentDTO) {
+    if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
+    manualClickTimerRef.current = window.setTimeout(() => {
+      setSelectedSegId(seg.id);
+      setManualStatus(`Selected saved chunk: ${seg.title}`);
+    }, 170);
+  }
+
+  function manualHandleOpen(seg: SegmentDTO) {
+    if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
+    setSelectedSegId(seg.id);
+    if (manualListScrollRef.current) {
+      manualLastScrollTopRef.current = manualListScrollRef.current.scrollTop;
+    }
+    setManualOpenSeg(seg);
+  }
+
   return (
-    <div style={{ height: "100vh", background: "#0b0e14", color: "#eaeaea" }}>
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        width: "100vw",
+        height: "100vh",
+        overflow: "hidden",
+        background: "#0b0e14",
+        color: "#eaeaea",
+      }}
+    >
       {/* Top bar */}
       <div
         style={{
@@ -224,8 +378,31 @@ export default function DocumentWorkspace() {
         </button>
       </div>
 
+      {/* Ingest banner */}
+      <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <b>Ingest:</b> {badge(parseStatus)}
+            {sourceType ? <span style={{ marginLeft: 10, opacity: 0.75 }}>source: {sourceType}</span> : null}
+          </div>
+          <div style={{ flex: 1 }} />
+          {!canSegment ? (
+            <span style={{ color: "#ffb3b3", opacity: 0.95 }}>
+              Segmentation disabled until parseStatus=ok.
+            </span>
+          ) : (
+            <span style={{ color: "#bfffdc", opacity: 0.95 }}>Ready for segmentation.</span>
+          )}
+        </div>
+        {parseStatus === "failed" && parseError ? (
+          <div style={{ marginTop: 8, color: "#ffb3b3", whiteSpace: "pre-wrap" }}>
+            <b>Parse error:</b> {parseError}
+          </div>
+        ) : null}
+      </div>
+
       {/* 50/50 split */}
-      <div style={{ display: "flex", height: "calc(100vh - 56px)" }}>
+      <div style={{ display: "flex", height: "calc(100vh - 56px - 60px)" }}>
         {/* Left: full document */}
         <div
           style={{
@@ -240,7 +417,8 @@ export default function DocumentWorkspace() {
             Full document
             {selectedSeg ? (
               <span style={{ marginLeft: 10, fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
-                — selected: #{(selectedSeg.orderIndex ?? 0) + 1} ({selectedSeg.mode})
+                — selected: #{(selectedSeg.orderIndex ?? 0) + 1} ({selectedSeg.mode}){" "}
+                {selectedSeg.isManual ? "• manual" : "• auto"}
               </span>
             ) : null}
           </div>
@@ -290,12 +468,30 @@ export default function DocumentWorkspace() {
                 List segments
               </button>
 
-              <button onClick={runSegmentation} style={{ padding: "8px 10px" }}>
+              <button
+                onClick={runSegmentation}
+                disabled={!canSegment}
+                style={{ padding: "8px 10px", opacity: canSegment ? 1 : 0.6 }}
+                title={!canSegment ? "parseStatus must be ok." : ""}
+              >
                 Segment now
               </button>
 
               <button onClick={deleteModeSegments} style={{ padding: "8px 10px" }}>
                 Delete mode segments
+              </button>
+
+              <button
+                onClick={() => {
+                  setManualOpen(true);
+                  setManualStatus("Select text (drag) on the left, then Save.");
+                  setManualSel(null);
+                  setManualTitle("");
+                  setManualOpenSeg(null);
+                }}
+                style={{ padding: "8px 10px" }}
+              >
+                Manual chunk
               </button>
             </div>
 
@@ -330,8 +526,14 @@ export default function DocumentWorkspace() {
               </div>
             </div>
 
-            {/* Search */}
+            {/* Search + Source filter */}
             <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
+              <select value={sourceFilter} onChange={(e) => setSourceFilter(e.target.value as SourceFilter)} style={{ padding: "8px 10px" }}>
+                <option value="all">All chunks</option>
+                <option value="auto">Auto only</option>
+                <option value="manual">Manual only</option>
+              </select>
+
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
@@ -345,11 +547,7 @@ export default function DocumentWorkspace() {
                   color: "#eaeaea",
                 }}
               />
-              <button
-                onClick={() => setQuery("")}
-                disabled={!query}
-                style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}
-              >
+              <button onClick={() => setQuery("")} disabled={!query} style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}>
                 Clear
               </button>
             </div>
@@ -357,7 +555,6 @@ export default function DocumentWorkspace() {
 
           {/* Body */}
           <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-            {/* List OR Viewer (toggle) */}
             {!openSeg ? (
               <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
                 <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
@@ -378,8 +575,8 @@ export default function DocumentWorkspace() {
                       return (
                         <div
                           key={s.id}
-                          onClick={() => handleSelect(s)} // ✅ single click select
-                          onDoubleClick={() => handleOpen(s)} // ✅ double click open
+                          onClick={() => handleSelect(s)}
+                          onDoubleClick={() => handleOpen(s)}
                           title="Click to select & highlight. Double-click to open."
                           style={{
                             cursor: "pointer",
@@ -390,11 +587,26 @@ export default function DocumentWorkspace() {
                             userSelect: "none",
                           }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
                             <b style={{ fontSize: 13 }}>
                               {s.orderIndex + 1}. {s.title}
+                              <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>
+                                {s.isManual ? "manual" : "auto"}
+                              </span>
                             </b>
-                            <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
+
+                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                              <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteSingle(s);
+                                }}
+                                style={{ padding: "4px 10px" }}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </div>
                           <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
                         </div>
@@ -415,12 +627,10 @@ export default function DocumentWorkspace() {
                   }}
                 >
                   <b style={{ flex: 1 }}>
-                    {openSeg.orderIndex + 1}. {openSeg.title}
+                    {openSeg.orderIndex + 1}. {openSeg.title}{" "}
+                    <span style={{ fontSize: 12, opacity: 0.7 }}>{openSeg.isManual ? "• manual" : "• auto"}</span>
                   </b>
-                  <button
-                    onClick={() => setOpenSeg(null)} // ✅ close viewer -> restores scroll
-                    style={{ padding: "8px 10px" }}
-                  >
+                  <button onClick={() => setOpenSeg(null)} style={{ padding: "8px 10px" }}>
                     Back to list
                   </button>
                 </div>
@@ -433,10 +643,209 @@ export default function DocumentWorkspace() {
           </div>
 
           <div style={{ padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, opacity: 0.7 }}>
-            Tip: Click = highlight in document. Double-click = open chunk viewer (Back keeps your scroll).
+            Tip: Click = highlight. Double-click = open. Filter = All/Auto/Manual.
           </div>
         </div>
       </div>
+
+      {/* Manual modal */}
+      {manualOpen ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.55)",
+            display: "flex",
+            padding: 18,
+            zIndex: 50,
+          }}
+        >
+          <div
+            style={{
+              flex: 1,
+              background: "#0b0e14",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 14,
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                padding: 12,
+                borderBottom: "1px solid rgba(255,255,255,0.10)",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+              }}
+            >
+              <b style={{ flex: 1 }}>Create manual chunk</b>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>{manualStatus}</span>
+              <button onClick={() => setManualOpen(false)} style={{ padding: "8px 10px" }}>
+                Close
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+              <div
+                style={{
+                  flex: "1 1 50%",
+                  minWidth: 0,
+                  borderRight: "1px solid rgba(255,255,255,0.10)",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
+                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700 }}>
+                  Select text below (drag). Then Save.
+                </div>
+
+                <div style={{ padding: 12, overflow: "auto" }}>
+                  <pre
+                    ref={manualPreRef}
+                    onMouseUp={captureManualSelection}
+                    onKeyUp={captureManualSelection}
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      margin: 0,
+                      lineHeight: 1.6,
+                      userSelect: "text",
+                      cursor: "text",
+                    }}
+                  >
+                    {docText}
+                  </pre>
+                </div>
+              </div>
+
+              <div style={{ flex: "1 1 50%", minWidth: 0, display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input
+                      value={manualTitle}
+                      onChange={(e) => setManualTitle(e.target.value)}
+                      placeholder="Title (optional)"
+                      style={{
+                        flex: 1,
+                        padding: "10px 12px",
+                        borderRadius: 10,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: "#0f1420",
+                        color: "#eaeaea",
+                      }}
+                    />
+                    <button onClick={saveManualChunk} style={{ padding: "10px 12px" }}>
+                      Save chunk
+                    </button>
+                  </div>
+
+                  <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
+                    Preview (stored selection):
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 6,
+                      padding: 10,
+                      borderRadius: 10,
+                      border: "1px solid rgba(255,255,255,0.10)",
+                      background: "rgba(255,255,255,0.03)",
+                      maxHeight: 130,
+                      overflow: "auto",
+                    }}
+                  >
+                    {manualSel ? (
+                      <>
+                        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>
+                          start={manualSel.start} end={manualSel.end} ({manualSel.end - manualSel.start} chars)
+                        </div>
+                        <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.5 }}>{manualSel.text}</pre>
+                      </>
+                    ) : (
+                      <div style={{ opacity: 0.7 }}>— no selection</div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+                  {!manualOpenSeg ? (
+                    <div ref={manualListScrollRef} style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+                      <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
+                        <span>Saved manual chunks ({mode})</span>
+                        <span style={{ opacity: 0.7, fontWeight: 400 }}>{manualSegments.length}</span>
+                      </div>
+
+                      {!manualSegments.length ? (
+                        <div style={{ padding: 12, opacity: 0.7 }}>
+                          No manual chunks yet for <b>{mode}</b>.
+                        </div>
+                      ) : (
+                        <div style={{ padding: 8, display: "grid", gap: 8 }}>
+                          {manualSegments.map((s) => (
+                            <div
+                              key={s.id}
+                              onClick={() => manualHandleSelect(s)}
+                              onDoubleClick={() => manualHandleOpen(s)}
+                              title="Click to select & highlight. Double-click to open."
+                              style={{
+                                cursor: "pointer",
+                                padding: 10,
+                                borderRadius: 10,
+                                border: "1px solid rgba(255,255,255,0.10)",
+                                background: "rgba(114,255,191,0.08)",
+                                userSelect: "none",
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                                <b style={{ fontSize: 13 }}>{s.title}</b>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteSingle(s);
+                                  }}
+                                  style={{ padding: "4px 10px" }}
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                      <div
+                        style={{
+                          padding: 12,
+                          borderBottom: "1px solid rgba(255,255,255,0.08)",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <b style={{ flex: 1 }}>{manualOpenSeg.title}</b>
+                        <button onClick={() => setManualOpenSeg(null)} style={{ padding: "8px 10px" }}>
+                          Back to list
+                        </button>
+                      </div>
+
+                      <div style={{ padding: 12, overflow: "auto" }}>
+                        <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>{manualOpenSeg.content}</pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, opacity: 0.7 }}>
+                  Tip: Manual modal stays open. Save multiple chunks in a row.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

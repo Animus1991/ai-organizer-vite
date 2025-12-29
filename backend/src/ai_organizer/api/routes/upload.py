@@ -24,6 +24,12 @@ from ai_organizer.ingest.parsers import (
 
 router = APIRouter()
 
+# -----------------------------
+# Supported file types (MVP)
+# -----------------------------
+SUPPORTED_EXTS = {".txt", ".md", ".json", ".docx"}  # (PDF/.doc later)
+UNSUPPORTED_DOC_EXTS = {".doc"}  # explicitly reject with clean message
+
 
 # -----------------------------
 # Response schemas
@@ -35,6 +41,11 @@ class UploadOut(BaseModel):
     filename: str
     deduped: bool = False
 
+    # ✅ new: ingest status for UX
+    parseStatus: str
+    parseError: Optional[str] = None
+    processedPath: Optional[str] = None
+
 
 class UploadListItem(BaseModel):
     uploadId: int
@@ -42,6 +53,10 @@ class UploadListItem(BaseModel):
     filename: str
     sizeBytes: int
     contentType: str
+
+    # ✅ useful for list badges (optional but helpful)
+    parseStatus: str
+    parseError: Optional[str] = None
 
 
 # -----------------------------
@@ -91,7 +106,6 @@ def _dedupe_if_exists(
     stem = Path(safe_name).stem
     suffix = Path(safe_name).suffix.lower()
 
-    # Μειώνουμε κόστος: κοιτάμε μόνο ίδια κατάληξη + ίδιο μέγεθος + "παρόμοιο" filename
     candidates = session.exec(
         select(Upload).where(
             Upload.user_id == user_id,
@@ -117,10 +131,8 @@ def _dedupe_if_exists(
 
             old_hash = _sha256_file(p)
             if old_hash == new_hash:
-                # Βρες document για αυτό το upload
                 doc = session.exec(select(Document).where(Document.upload_id == up.id)).first()
                 if doc:
-                    # Σβήσε το νέο αρχείο (δεν θα το γράψουμε στη DB)
                     try:
                         new_path.unlink(missing_ok=True)
                     except Exception:
@@ -130,6 +142,31 @@ def _dedupe_if_exists(
             continue
 
     return None
+
+
+def _write_processed_text(upload_id: int, original_name: str, text: str) -> str:
+    """
+    Writes processed text ONLY when parse succeeded.
+    Returns processed_path string.
+    """
+    processed_dir: Path = settings.AIORG_PROCESSED_DIR
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    base = Path(original_name).stem or f"upload_{upload_id}"
+    safe_base = re.sub(r"[^\w.\-]+", "_", base, flags=re.UNICODE)[:120]
+    out_name = f"{upload_id}_{safe_base}.txt"
+    out_path = processed_dir / out_name
+
+    out_path.write_text(text or "", encoding="utf-8", errors="replace")
+    return str(out_path)
+
+
+def _fail_doc_fields(ext: str) -> tuple[str, str]:
+    if ext in UNSUPPORTED_DOC_EXTS:
+        return "failed", "Unsupported .doc. Please upload .docx instead."
+    if ext not in SUPPORTED_EXTS:
+        return "failed", f"Unsupported file type: {ext}. Supported: {', '.join(sorted(SUPPORTED_EXTS))}"
+    return "failed", "Parse failed."
 
 
 # -----------------------------
@@ -156,6 +193,8 @@ def list_uploads(
                     filename=up.filename,
                     sizeBytes=up.size_bytes,
                     contentType=up.content_type,
+                    parseStatus=getattr(doc, "parse_status", "pending"),
+                    parseError=getattr(doc, "parse_error", None),
                 )
             )
         return out
@@ -188,6 +227,7 @@ async def upload(
             pass
 
     size_bytes = target.stat().st_size
+    ext = target.suffix.lower()
 
     with Session(engine) as session:
         # 2) DEDUPE before inserting DB rows
@@ -200,14 +240,17 @@ async def upload(
         )
         if dedupe_hit:
             upload_id, document_id = dedupe_hit
-            # βρίσκουμε sourceType για UI (nice-to-have)
             doc = session.exec(select(Document).where(Document.id == document_id)).first()
+
             return UploadOut(
                 uploadId=upload_id,
                 documentId=document_id,
                 sourceType=(doc.source_type if doc else "unknown"),
                 filename=safe_name,
                 deduped=True,
+                parseStatus=(doc.parse_status if doc else "pending"),
+                parseError=(doc.parse_error if doc else None),
+                processedPath=(doc.processed_path if doc else None),
             )
 
         # 3) Insert Upload
@@ -222,35 +265,51 @@ async def upload(
         session.commit()
         session.refresh(up)
 
-        # 4) Parse into Document
-        ext = target.suffix.lower()
+        # 4) Parse into Document (clean status & errors)
         raw_text = ""
         source_type = "unknown"
+        parse_status = "pending"
+        parse_error: Optional[str] = None
+        processed_path: Optional[str] = None
 
-        if ext in [".txt", ".md"]:
-            raw_text = read_text_file(target)
-            source_type = "text" if ext == ".txt" else "md"
+        # Explicit unsupported case (.doc)
+        if ext in UNSUPPORTED_DOC_EXTS:
+            source_type = "unsupported_doc"
+            parse_status, parse_error = _fail_doc_fields(ext)
 
-        elif ext == ".json":
-            source_type = "chatgpt_json"
+        # Supported types
+        elif ext in SUPPORTED_EXTS:
             try:
-                raw = read_text_file(target)
-                raw_text = parse_chatgpt_export_json(raw)
-            except Exception as e:
-                source_type = "chatgpt_json_parse_error"
-                raw_text = f"[PARSE ERROR] {target.name}\nError: {type(e).__name__}: {e}"
+                if ext in [".txt", ".md"]:
+                    raw_text = read_text_file(target)
+                    source_type = "text" if ext == ".txt" else "md"
 
-        elif ext == ".docx":
-            source_type = "docx"
-            try:
-                raw_text = read_docx_file(target)
-            except Exception as e:
-                source_type = "docx_parse_error"
-                raw_text = f"[PARSE ERROR] {target.name}\nError: {type(e).__name__}: {e}"
+                elif ext == ".json":
+                    source_type = "chatgpt_json"
+                    raw = read_text_file(target)
+                    raw_text = parse_chatgpt_export_json(raw)
 
+                elif ext == ".docx":
+                    source_type = "docx"
+                    raw_text = read_docx_file(target)
+
+                # If we reached here without exception -> ok
+                parse_status = "ok"
+                parse_error = None
+                processed_path = _write_processed_text(up.id, target.name, raw_text)
+
+            except Exception as e:
+                parse_status = "failed"
+                parse_error = f"{type(e).__name__}: {e}"
+                processed_path = None
+                raw_text = ""  # ✅ do NOT mix errors into text
+
+        # Any other extension: unsupported
         else:
-            raw_text = f"[UNPARSED FILE] {target.name} ({file.content_type})"
-            source_type = "binary_pending"
+            source_type = "unsupported"
+            parse_status, parse_error = _fail_doc_fields(ext)
+            raw_text = ""
+            processed_path = None
 
         doc = Document(
             upload_id=up.id,
@@ -258,6 +317,9 @@ async def upload(
             source_type=source_type,
             text=raw_text,
             user_id=user.id,
+            parse_status=parse_status,
+            parse_error=parse_error,
+            processed_path=processed_path,
         )
         session.add(doc)
         session.commit()
@@ -269,4 +331,7 @@ async def upload(
             sourceType=doc.source_type,
             filename=up.filename,
             deduped=False,
+            parseStatus=doc.parse_status,
+            parseError=doc.parse_error,
+            processedPath=doc.processed_path,
         )
