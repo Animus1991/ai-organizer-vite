@@ -1,5 +1,4 @@
-// src/lib/api.ts
-
+// C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\lib\api.ts
 const API_BASE =
   import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "http://127.0.0.1:8000/api";
 
@@ -114,7 +113,6 @@ export async function login(email: string, password: string) {
 }
 
 export async function logout(refreshToken?: string | null) {
-  // best-effort backend logout
   if (!refreshToken) return;
   try {
     await fetch(`${API_BASE}/auth/logout`, {
@@ -148,7 +146,6 @@ export type UploadResponseDTO = {
   filename: string;
   deduped?: boolean;
 
-  // ✅ new
   parseStatus: "ok" | "failed" | "pending" | string;
   parseError?: string | null;
   processedPath?: string | null;
@@ -180,7 +177,6 @@ export type DocumentDTO = {
 
   text: string;
 
-  // ✅ ingest state
   parse_status?: "ok" | "failed" | "pending" | string;
   parse_error?: string | null;
   processed_path?: string | null;
@@ -191,6 +187,29 @@ export type DocumentDTO = {
     size_bytes?: number | null;
     stored_path?: string | null;
   };
+};
+
+export type SegmentsListMeta = {
+  count: number;
+  mode: string; // "qa" | "paragraphs" | "all"
+  last_run?: string | null;
+};
+
+export type SegmentsListResponse = {
+  items: SegmentDTO[];
+  meta: SegmentsListMeta;
+};
+
+export type SegmentPatchDTO = {
+  title?: string | null;
+  start?: number | null;
+  end?: number | null;
+  content?: string | null;
+};
+
+export type DocumentPatchDTO = {
+  title?: string | null;
+  text?: string | null;
 };
 
 // ------------------------------
@@ -250,7 +269,8 @@ export async function segmentDocument(documentId: number, mode: "qa" | "paragrap
   return res.json().catch(() => ({}));
 }
 
-export async function listSegments(documentId: number, mode?: "qa" | "paragraphs") {
+// meta-aware list
+export async function listSegmentsWithMeta(documentId: number, mode?: "qa" | "paragraphs") {
   const qs = mode ? `?mode=${encodeURIComponent(mode)}` : "";
   const res = await authFetch(`/documents/${documentId}/segments${qs}`);
 
@@ -259,14 +279,54 @@ export async function listSegments(documentId: number, mode?: "qa" | "paragraphs
     throw new Error(`List failed: ${res.status} ${txt}`);
   }
 
-  const data = await res.json().catch(() => []);
-  const items = Array.isArray(data)
-    ? data
-    : Array.isArray((data as any)?.items)
-      ? (data as any).items
-      : [];
+  const data = (await res.json().catch(() => ({}))) as any;
 
-  return items as SegmentDTO[];
+  if (Array.isArray(data)) {
+    return {
+      items: data as SegmentDTO[],
+      meta: { count: (data as any[]).length, mode: mode ?? "all", last_run: null },
+    } as SegmentsListResponse;
+  }
+
+  return {
+    items: Array.isArray(data?.items) ? (data.items as SegmentDTO[]) : [],
+    meta: (data?.meta ?? { count: 0, mode: mode ?? "all", last_run: null }) as SegmentsListMeta,
+  } as SegmentsListResponse;
+}
+
+// compatibility old name (kept)
+export async function listSegments(documentId: number, mode?: "qa" | "paragraphs"): Promise<SegmentsListResponse> {
+  return listSegmentsWithMeta(documentId, mode);
+}
+
+export async function patchSegment(segmentId: number, patch: SegmentPatchDTO): Promise<SegmentDTO> {
+  const res = await authFetch(`/segments/${segmentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(patch),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Patch segment failed: ${res.status} ${txt}`);
+  }
+
+  return (await res.json()) as SegmentDTO;
+}
+
+/**
+ * IMPORTANT: Backward-compatible export.
+ * Some screens import patchManualSegment(). We keep it so the app doesn't blank-screen.
+ */
+export async function patchManualSegment(
+  segmentId: number,
+  payload: { title?: string | null; start?: number | null; end?: number | null }
+): Promise<SegmentDTO> {
+  const body: SegmentPatchDTO = {};
+  if (payload.title !== undefined) body.title = payload.title;
+  if (payload.start !== undefined) body.start = payload.start;
+  if (payload.end !== undefined) body.end = payload.end;
+  return patchSegment(segmentId, body);
 }
 
 export async function listSegmentations(documentId: number): Promise<SegmentationSummary[]> {
@@ -329,6 +389,35 @@ export async function getDocument(documentId: number): Promise<DocumentDTO> {
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to load document (${res.status})`);
+  }
+
+  const data = await res.json().catch(() => ({}));
+  return {
+    id: Number((data as any).id ?? documentId),
+    title: (data as any).title ?? undefined,
+    filename: (data as any).filename ?? null,
+    source_type: (data as any).source_type ?? undefined,
+
+    text: String((data as any).text ?? ""),
+
+    parse_status: (data as any).parse_status ?? undefined,
+    parse_error: (data as any).parse_error ?? null,
+    processed_path: (data as any).processed_path ?? null,
+
+    upload: (data as any).upload ?? undefined,
+  };
+}
+
+export async function patchDocument(documentId: number, patch: DocumentPatchDTO): Promise<DocumentDTO> {
+  const res = await authFetch(`/documents/${documentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(patch),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Patch document failed: ${res.status} ${txt}`);
   }
 
   const data = await res.json().catch(() => ({}));

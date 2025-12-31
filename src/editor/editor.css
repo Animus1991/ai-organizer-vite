@@ -1,0 +1,96 @@
+.rte-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  min-height: 260px;
+}
+
+.rte-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.03);
+}
+
+.rte-btn {
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.rte-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.rte-btn[aria-pressed="true"] {
+  border-color: rgba(114, 255, 191, 0.55);
+  background: rgba(114, 255, 191, 0.12);
+}
+
+.rte-editor {
+  flex: 1;
+  padding: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+  overflow: auto;
+  min-height: 180px;
+}
+
+.rte-editor .ProseMirror {
+  outline: none;
+  line-height: 1.55;
+}
+
+.rte-editor .ProseMirror p {
+  margin: 0 0 10px 0;
+}
+
+.rte-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+  font-size: 12px;
+  opacity: 0.9;
+}
+
+.rte-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.rte-modal {
+  width: min(720px, 92vw);
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(10,12,18,0.98);
+  padding: 14px;
+}
+
+.rte-field {
+  width: 100%;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: inherit;
+}

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- black background -->
+  <rect width="256" height="256" fill="#000000"/>
+  <!-- white circle border -->
+  <circle cx="128" cy="128" r="92" fill="none" stroke="#FFFFFF" stroke-width="10"/>
+  <!-- AI text -->
+  <text x="128" y="148"
+        text-anchor="middle"
+        font-family="Inter, Arial, sans-serif"
+        font-size="72"
+        font-weight="700"
+        fill="#FFFFFF"
+        letter-spacing="2">AI</text>
+</svg>

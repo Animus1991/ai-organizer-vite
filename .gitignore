@@ -1,16 +1,31 @@
+# ------------------------------
 # Python
+# ------------------------------
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyd
+*.pyo
+
 .venv/
 venv/
 
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ------------------------------
 # Env files (ignore all, keep templates)
+# ------------------------------
 **/.env
 **/.env.*
 !**/.env.example
 
+# ------------------------------
 # Logs
-logs
+# ------------------------------
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -18,36 +33,51 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
+# ------------------------------
+# Node / Vite build outputs
+# ------------------------------
+node_modules/
+dist/
+dist-ssr/
 build/
+*.local
 
-# IDE
+# ------------------------------
+# IDE / Editor
+# ------------------------------
 .idea/
 .vscode/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Databases / local data
-backend/data/*.db
-backend/data/*.db.*
-backend/data/uploads/
+# allow sharing recommended extensions
+!.vscode/extensions.json
 
-# Local app database
-data/app.db
+# ------------------------------
+# OS
+# ------------------------------
+.DS_Store
+Thumbs.db
+
+# ------------------------------
+# Local data / DB (project-specific)
+# ------------------------------
+
+# Ignore everything inside backend/data, BUT allow .gitkeep scaffolding
+backend/data/**
+!backend/data/
+!backend/data/.gitkeep
+!backend/data/uploads/
+!backend/data/uploads/.gitkeep
+!backend/data/processed/
+!backend/data/processed/.gitkeep
+
+# Generic DB files (if you never want to commit DBs anywhere)
 *.db
+*.db.*
+
+# If you keep any local db path outside backend/data
+data/app.db
