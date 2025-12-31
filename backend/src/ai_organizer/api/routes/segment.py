@@ -1,39 +1,54 @@
+# backend/src/ai_organizer/api/routes/segment.py
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel
-from sqlmodel import Session, select, delete
-from sqlalchemy import func
+from enum import Enum
 
-from ai_organizer.core.db import engine
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import func
+from sqlmodel import Session, delete, select
+
 from ai_organizer.core.auth_dep import get_current_user
+from ai_organizer.core.db import engine
+from ai_organizer.ingest.segmenters import segment_paragraphs, segment_qa
 from ai_organizer.models import Document, Segment, User
-from ai_organizer.ingest.segmenters import segment_qa, segment_paragraphs
 
 router = APIRouter()
 
-AUTO_MODES = {"qa", "paragraphs"}
-ALL_MODES = {"qa", "paragraphs"}  # δεν υπάρχει "manual" mode
+
+class SegmentMode(str, Enum):
+    qa = "qa"
+    paragraphs = "paragraphs"
+
+
+AUTO_MODES = {SegmentMode.qa, SegmentMode.paragraphs}
+ALL_MODES = {SegmentMode.qa, SegmentMode.paragraphs}
 
 
 def _scalar(val):
-    # defensive: in some result shapes you may get (x,) instead of x
     if isinstance(val, tuple) and len(val) == 1:
         return val[0]
     return val
 
 
 class ManualSegmentIn(BaseModel):
-    mode: str = "qa"  # qa | paragraphs
+    mode: SegmentMode = SegmentMode.qa
     start: int
     end: int
     title: str | None = None
 
 
+class SegmentPatchIn(BaseModel):
+    title: str | None = None
+    start: int | None = None
+    end: int | None = None
+    content: str | None = None
+
+
 @router.post("/documents/{document_id}/segment")
 def segment_document(
     document_id: int,
-    mode: str = "qa",
+    mode: SegmentMode = SegmentMode.qa,
     user: User = Depends(get_current_user),
 ):
     if mode not in AUTO_MODES:
@@ -46,31 +61,30 @@ def segment_document(
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Load manual segments for this document+mode (we will keep them)
+        # keep MANUAL segments for this doc+mode
         manual_items = session.exec(
             select(Segment)
             .where(
                 Segment.document_id == document_id,
-                Segment.mode == mode,
+                Segment.mode == mode.value,
                 Segment.is_manual == True,
             )
-            .order_by(Segment.order_index)
+            .order_by(Segment.order_index.asc(), Segment.id.asc())
         ).all()
 
-        # Delete only AUTO segments for this mode
+        # delete only AUTO segments for this mode
         session.exec(
             delete(Segment).where(
                 Segment.document_id == document_id,
-                Segment.mode == mode,
+                Segment.mode == mode.value,
                 Segment.is_manual == False,
             )
         )
         session.commit()
 
         text = doc.text or ""
-        chunks = segment_qa(text) if mode == "qa" else segment_paragraphs(text)
+        chunks = segment_qa(text) if mode == SegmentMode.qa else segment_paragraphs(text)
 
-        # Recreate AUTO segments starting at 0
         order = 0
         created = 0
 
@@ -93,8 +107,8 @@ def segment_document(
             seg = Segment(
                 document_id=document_id,
                 order_index=order,
-                mode=mode,
-                title=ch.get("title") or f"Segment #{order + 1}",
+                mode=mode.value,
+                title=ch.get("title") or f"Chunk #{order + 1}",
                 content=content,
                 start_char=start,
                 end_char=end,
@@ -106,15 +120,14 @@ def segment_document(
 
         session.commit()
 
-        # Reindex manual segments to come after autos (keeps manual, no delete)
-        # This avoids unbounded order_index growth and keeps list readable.
+        # reindex manual after autos
         if manual_items:
             for i, s in enumerate(manual_items):
                 s.order_index = order + i
                 session.add(s)
             session.commit()
 
-    return {"ok": True, "documentId": document_id, "mode": mode, "count": created}
+    return {"ok": True, "documentId": document_id, "mode": mode.value, "count": created}
 
 
 @router.post("/documents/{document_id}/segments/manual")
@@ -142,11 +155,11 @@ def create_manual_segment(
 
         content = text[start:end]
 
-        # append at end of this document+mode list
+        # append at end
         last_row = session.exec(
             select(func.max(Segment.order_index)).where(
                 Segment.document_id == document_id,
-                Segment.mode == payload.mode,
+                Segment.mode == payload.mode.value,
             )
         ).one()
         last = _scalar(last_row)
@@ -159,7 +172,7 @@ def create_manual_segment(
         seg = Segment(
             document_id=document_id,
             order_index=next_order,
-            mode=payload.mode,
+            mode=payload.mode.value,
             title=title,
             content=content,
             start_char=start,
@@ -184,10 +197,76 @@ def create_manual_segment(
         }
 
 
+@router.patch("/segments/{segment_id}")
+def patch_segment(
+    segment_id: int,
+    payload: SegmentPatchIn,
+    user: User = Depends(get_current_user),
+):
+    with Session(engine) as session:
+        seg = session.exec(
+            select(Segment)
+            .join(Document, Segment.document_id == Document.id)
+            .where(Segment.id == segment_id, Document.user_id == user.id)
+        ).first()
+
+        if not seg:
+            raise HTTPException(status_code=404, detail="Segment not found")
+
+        doc = session.exec(
+            select(Document).where(Document.id == seg.document_id, Document.user_id == user.id)
+        ).first()
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        text = doc.text or ""
+
+        if payload.title is not None:
+            seg.title = payload.title.strip()
+
+        start = payload.start
+        end = payload.end
+
+        if (start is None) ^ (end is None):
+            raise HTTPException(status_code=400, detail="Provide both start and end (or neither).")
+
+        if start is not None and end is not None:
+            start = int(start)
+            end = int(end)
+            if start < 0 or end < 0 or start >= len(text) or end > len(text) or end <= start:
+                raise HTTPException(status_code=400, detail="Invalid start/end")
+
+            seg.start_char = start
+            seg.end_char = end
+
+            if payload.content is None:
+                seg.content = text[start:end]
+
+        if payload.content is not None:
+            seg.content = payload.content
+
+        session.add(seg)
+        session.commit()
+        session.refresh(seg)
+
+        return {
+            "id": seg.id,
+            "documentId": seg.document_id,
+            "orderIndex": seg.order_index,
+            "mode": seg.mode,
+            "title": seg.title,
+            "content": seg.content,
+            "start": seg.start_char,
+            "end": seg.end_char,
+            "isManual": bool(getattr(seg, "is_manual", False)),
+            "createdAt": (seg.created_at.isoformat() if getattr(seg, "created_at", None) else None),
+        }
+
+
 @router.get("/documents/{document_id}/segments")
 def list_segments(
     document_id: int,
-    mode: str | None = None,
+    mode: SegmentMode | None = None,
     user: User = Depends(get_current_user),
 ):
     if mode is not None and mode not in ALL_MODES:
@@ -201,25 +280,45 @@ def list_segments(
             raise HTTPException(status_code=404, detail="Document not found")
 
         stmt = select(Segment).where(Segment.document_id == document_id)
+        meta_stmt = select(
+            func.count(Segment.id).label("count"),
+            func.max(Segment.created_at).label("last_run"),
+        ).where(Segment.document_id == document_id)
+
         if mode:
-            stmt = stmt.where(Segment.mode == mode)
+            stmt = stmt.where(Segment.mode == mode.value)
+            meta_stmt = meta_stmt.where(Segment.mode == mode.value)
+            stmt = stmt.order_by(Segment.order_index.asc(), Segment.id.asc())
+        else:
+            stmt = stmt.order_by(Segment.mode.asc(), Segment.order_index.asc(), Segment.id.asc())
 
-        items = session.exec(stmt.order_by(Segment.mode, Segment.order_index)).all()
+        items = session.exec(stmt).all()
 
-        return [
-            {
-                "id": s.id,
-                "orderIndex": s.order_index,
-                "mode": s.mode,
-                "title": s.title,
-                "content": s.content,
-                "start": s.start_char,
-                "end": s.end_char,
-                "isManual": bool(getattr(s, "is_manual", False)),
-                "createdAt": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
-            }
-            for s in items
-        ]
+        meta_row = session.exec(meta_stmt).one()
+        count = int(_scalar(meta_row[0]) or 0)
+        last_run = meta_row[1]
+
+        return {
+            "items": [
+                {
+                    "id": s.id,
+                    "orderIndex": s.order_index,
+                    "mode": s.mode,
+                    "title": s.title,
+                    "content": s.content,
+                    "start": s.start_char,
+                    "end": s.end_char,
+                    "isManual": bool(getattr(s, "is_manual", False)),
+                    "createdAt": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
+                }
+                for s in items
+            ],
+            "meta": {
+                "count": count,
+                "mode": (mode.value if mode else "all"),
+                "last_run": (last_run.isoformat() if last_run else None),
+            },
+        }
 
 
 @router.get("/segments/{segment_id}")
@@ -290,7 +389,7 @@ def list_segmentations(
             )
             .where(Segment.document_id == document_id)
             .group_by(Segment.mode)
-            .order_by(Segment.mode)
+            .order_by(Segment.mode.asc())
         ).all()
 
         return [
@@ -302,16 +401,10 @@ def list_segmentations(
 @router.delete("/documents/{document_id}/segments")
 def delete_segments(
     document_id: int,
-    mode: str | None = Query(default=None),
+    mode: SegmentMode | None = Query(default=None),
     include_manual: bool = Query(default=False),
     user: User = Depends(get_current_user),
 ):
-    """
-    Deletes segments for a document.
-    - If mode provided, deletes only that mode.
-    - By default keeps manual segments (include_manual=false).
-    - If you really want to delete manual too, set include_manual=true.
-    """
     if mode is not None and mode not in ALL_MODES:
         raise HTTPException(status_code=400, detail=f"Unknown mode: {mode}")
 
@@ -324,7 +417,7 @@ def delete_segments(
 
         stmt = delete(Segment).where(Segment.document_id == document_id)
         if mode:
-            stmt = stmt.where(Segment.mode == mode)
+            stmt = stmt.where(Segment.mode == mode.value)
 
         if not include_manual:
             stmt = stmt.where(Segment.is_manual == False)
@@ -335,7 +428,7 @@ def delete_segments(
         return {
             "ok": True,
             "documentId": document_id,
-            "mode": mode,
+            "mode": (mode.value if mode else None),
             "includeManual": include_manual,
             "deleted": getattr(res, "rowcount", None),
         }
