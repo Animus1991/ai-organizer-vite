@@ -9,9 +9,11 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 # --- Make "src/" importable (εσύ τρέχεις app με --app-dir src) ---
-BASE_DIR = Path(__file__).resolve().parents[1]   # .../backend
+BASE_DIR = Path(__file__).resolve().parents[1]  # .../backend
 SRC_DIR = BASE_DIR / "src"
-sys.path.append(str(SRC_DIR))
+
+# Βάλε το src πρώτα στη λίστα για να μην παίζουν περίεργα imports
+sys.path.insert(0, str(SRC_DIR))
 
 # --- Load app settings + import models so metadata is populated ---
 from ai_organizer.core.config import settings  # noqa: E402
@@ -26,8 +28,11 @@ target_metadata = SQLModel.metadata
 
 
 def get_url() -> str:
-    # θα χρησιμοποιήσει: sqlite:///./data/app.db (από το config.py / .env)
-    return settings.AIORG_DB_URL
+    # Single source: AIORG_DB_URL (ή fallback DATABASE_URL)
+    url = getattr(settings, "AIORG_DB_URL", None) or getattr(settings, "DATABASE_URL", None)
+    if not url:
+        url = "sqlite:///./data/app.db"
+    return str(url)
 
 
 def run_migrations_offline() -> None:

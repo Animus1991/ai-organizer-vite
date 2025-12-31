@@ -1,57 +1,80 @@
-# backend/src/ai_organizer/core/env.py
 from __future__ import annotations
 
-import os
+import sys
+from logging.config import fileConfig
 from pathlib import Path
-from typing import List
+
+from alembic import context
+from sqlalchemy import engine_from_config, pool
+from sqlmodel import SQLModel
+
+# --- Make "src/" importable (εσύ τρέχεις app με --app-dir src) ---
+BASE_DIR = Path(__file__).resolve().parents[1]  # .../backend
+SRC_DIR = BASE_DIR / "src"
+
+# Βάλε το src πρώτο στο sys.path για να μην "μπερδεύεται" με άλλα installs
+src_str = str(SRC_DIR)
+if src_str not in sys.path:
+    sys.path.insert(0, src_str)
+
+# --- Load app settings + import models so metadata is populated ---
+from ai_organizer.core.config import settings  # noqa: E402
+import ai_organizer.models  # noqa: E402  (φορτώνει τα SQLModel tables)
+
+config = context.config
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = SQLModel.metadata
 
 
-def _backend_root() -> Path:
-    """
-    env.py βρίσκεται στο:
-    backend/src/ai_organizer/core/env.py
-    Άρα backend root = parents[3]
-    """
-    return Path(__file__).resolve().parents[3]
+def get_url() -> str:
+    # Single source: AIORG_DB_URL (ή fallback DATABASE_URL)
+    url = getattr(settings, "AIORG_DB_URL", None) or getattr(settings, "DATABASE_URL", None)
+    if not url:
+        url = "sqlite:///./data/app.db"
+    return str(url)
 
 
-def _parse_origins(value: str) -> List[str]:
-    value = (value or "").strip()
-    if not value:
-        return []
-    return [v.strip() for v in value.split(",") if v.strip()]
+def run_migrations_offline() -> None:
+    url = get_url()
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        compare_type=True,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
 
 
-def resolve_data_dir() -> Path:
-    """
-    Priority:
-    1) AIORG_DATA_DIR (absolute ή relative προς backend/)
-    2) fallback: backend/data
-    """
-    raw = (os.getenv("AIORG_DATA_DIR") or "").strip()
-    if raw:
-        p = Path(raw)
-        if not p.is_absolute():
-            p = (_backend_root() / p).resolve()
-    else:
-        p = (_backend_root() / "data").resolve()
+def run_migrations_online() -> None:
+    configuration = config.get_section(config.config_ini_section) or {}
+    configuration["sqlalchemy.url"] = get_url()
 
-    # Ensure directories exist
-    p.mkdir(parents=True, exist_ok=True)
-    (p / "uploads").mkdir(parents=True, exist_ok=True)
-    (p / "processed").mkdir(parents=True, exist_ok=True)
+    connectable = engine_from_config(
+        configuration,
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
 
-    return p
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+            # SQLite χρειάζεται batch mode για ALTER TABLE + FKs
+            render_as_batch=(connection.dialect.name == "sqlite"),
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
 
 
-DATA_DIR: Path = resolve_data_dir()
-UPLOADS_DIR: Path = DATA_DIR / "uploads"
-PROCESSED_DIR: Path = DATA_DIR / "processed"
-DB_PATH: Path = DATA_DIR / "app.db"
-
-AIORG_HOST: str = (os.getenv("AIORG_HOST") or "127.0.0.1").strip()
-AIORG_PORT: int = int((os.getenv("AIORG_PORT") or "8000").strip())
-
-AIORG_JWT_SECRET: str = (os.getenv("AIORG_JWT_SECRET") or "").strip()
-
-AIORG_CORS_ORIGINS: List[str] = _parse_origins(os.getenv("AIORG_CORS_ORIGINS") or "")
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()

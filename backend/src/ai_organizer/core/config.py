@@ -22,7 +22,7 @@ def _as_posix(p: Path) -> str:
 @dataclass(frozen=True)
 class Settings:
     AIORG_CORS_ORIGINS: str = field(
-        default_factory=lambda: os.getenv("AIORG_CORS_ORIGINS", "http://localhost:5173")
+        default_factory=lambda: os.getenv("AIORG_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
     )
     AIORG_HOST: str = field(default_factory=lambda: os.getenv("AIORG_HOST", "127.0.0.1"))
     AIORG_PORT: int = field(default_factory=lambda: int(os.getenv("AIORG_PORT", "8000")))
