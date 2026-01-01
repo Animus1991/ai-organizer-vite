@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from "react";
+// C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\editor\Toolbar.tsx
+import React, { useEffect, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { findNext, replaceAll, replaceCurrent } from "./utils/findReplace";
 import { normalizePlainText, plainTextToHtml } from "./utils/text";
@@ -18,19 +19,32 @@ export function Toolbar({
   const [q, setQ] = useState("");
   const [r, setR] = useState("");
 
-  const canMarkSelection = useMemo(() => {
+  const [selTick, setSelTick] = useState(0);
+
+  useEffect(() => {
+    if (!editor) return;
+    const bump = () => setSelTick((t) => t + 1);
+    editor.on("selectionUpdate", bump);
+    editor.on("transaction", bump);
+    return () => {
+      editor.off("selectionUpdate", bump);
+      editor.off("transaction", bump);
+    };
+  }, [editor]);
+
+  const hasSelection = useMemo(() => {
     const { from, to } = editor.state.selection;
     return from !== to;
   }, [editor.state.selection]);
 
   const applySegmentHighlight = () => {
-    if (!canMarkSelection) return;
+    if (!hasSelection) return;
     const segmentId = uid("seg");
     editor.chain().focus().setMark("segmentMark", { segmentId }).run();
   };
 
   const applyComment = () => {
-    if (!canMarkSelection) return;
+    if (!hasSelection) return;
     const commentId = uid("cmt");
     editor.chain().focus().setMark("commentMark", { commentId }).run();
   };
@@ -107,13 +121,13 @@ export function Toolbar({
 
         <span style={{ opacity: 0.5 }}>|</span>
 
-        <button className="rte-btn" disabled={!canMarkSelection} onClick={applySegmentHighlight} type="button">
+        <button className="rte-btn" disabled={!hasSelection} onClick={applySegmentHighlight} type="button">
           Segment mark
         </button>
-        <button className="rte-btn" disabled={!canMarkSelection} onClick={applyComment} type="button">
+        <button className="rte-btn" disabled={!hasSelection} onClick={applyComment} type="button">
           Comment mark
         </button>
-        <button className="rte-btn" disabled={!canMarkSelection} onClick={clearMarksInSelection} type="button">
+        <button className="rte-btn" disabled={!hasSelection} onClick={clearMarksInSelection} type="button">
           Clear marks
         </button>
 

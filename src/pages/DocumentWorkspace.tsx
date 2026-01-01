@@ -18,6 +18,8 @@ import {
 import { RichTextEditor } from "../editor/RichTextEditor";
 import { plainTextToHtml } from "../editor/utils/text";
 
+type SourceFilter = "all" | "auto" | "manual";
+type SelInfo = { start: number; end: number; text: string };
 
 function fmt(dt?: string | null) {
   if (!dt) return "—";
@@ -30,8 +32,14 @@ function preview120(s: string) {
   return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
 }
 
-type SourceFilter = "all" | "auto" | "manual";
-type SelInfo = { start: number; end: number; text: string };
+function htmlToPlainText(html: string): string {
+  try {
+    const doc = new DOMParser().parseFromString(html || "", "text/html");
+    return (doc.body?.textContent ?? "").replace(/\r\n/g, "\n");
+  } catch {
+    return "";
+  }
+}
 
 function badge(parseStatus?: string) {
   if (parseStatus === "ok") return "✅ ok";
@@ -70,40 +78,6 @@ function computeSelectionFromPre(pre: HTMLPreElement, docText: string): SelInfo 
   return { start, end, text: docText.slice(start, end) };
 }
 
-  function saveNoteLocal() {
-    try {
-      localStorage.setItem(`aiorg_note_html_doc_${docId}`, noteHtml);
-      setNoteDirty(false);
-      setNoteStatus("Notes saved locally ✅");
-    } catch (e: any) {
-      setNoteStatus(`Failed to save notes: ${e?.message ?? String(e)}`);
-    }
-  }
-
-  function resetNoteFromDocument() {
-    setNoteHtml(plainTextToHtml(docText));
-    setNoteDirty(true);
-    setNoteStatus("Notes replaced from current document text (not saved yet).");
-  }
-
-  async function applyNoteToDocumentText() {
-    const ok = window.confirm(
-      "Apply Notes to Document TEXT?\n\nThis will overwrite the document text with the editor plain-text, and your segment offsets may become invalid.\nYou will likely need to re-run segmentation.\n\nContinue?"
-    );
-    if (!ok) return;
-
-    try {
-      setStatus("Applying notes to document...");
-      await patchDocument(docId, { text: noteText });
-      await loadDocument();
-      await loadSummary();
-      setStatus("Applied notes to document ✅");
-    } catch (e: any) {
-      setStatus(e?.message ?? "Failed to apply notes to document");
-    }
-  }
-
-
 export default function DocumentWorkspace() {
   const nav = useNavigate();
   const { documentId } = useParams();
@@ -119,6 +93,7 @@ export default function DocumentWorkspace() {
   const [parseError, setParseError] = useState<string | null>(null);
   const [sourceType, setSourceType] = useState<string | null>(null);
 
+  // summary + list
   const [summary, setSummary] = useState<SegmentationSummary[]>([]);
   const [mode, setMode] = useState<"qa" | "paragraphs">("qa");
   const [segments, setSegments] = useState<SegmentDTO[]>([]);
@@ -147,32 +122,34 @@ export default function DocumentWorkspace() {
   const manualLastScrollTopRef = useRef<number>(0);
   const manualClickTimerRef = useRef<number | null>(null);
 
-  // chunk edit modal (single, for manual+auto)
+  // chunk edit modal
   const [chunkEditOpen, setChunkEditOpen] = useState(false);
   const [chunkEditSeg, setChunkEditSeg] = useState<SegmentDTO | null>(null);
   const [chunkEditTitle, setChunkEditTitle] = useState("");
   const [chunkEditStart, setChunkEditStart] = useState<number>(0);
   const [chunkEditEnd, setChunkEditEnd] = useState<number>(0);
   const [chunkEditContent, setChunkEditContent] = useState("");
+  const [chunkEditHtml, setChunkEditHtml] = useState<string>("<p></p>");
+  const [chunkEditDirty, setChunkEditDirty] = useState<boolean>(false);
   const [chunkEditStatus, setChunkEditStatus] = useState("");
   const chunkEditPreRef = useRef<HTMLPreElement | null>(null);
   const [chunkEditSyncFromDoc, setChunkEditSyncFromDoc] = useState(true);
 
-  // document edit modal (optional)
+  // document edit modal
   const [docEditOpen, setDocEditOpen] = useState(false);
   const [docEditText, setDocEditText] = useState("");
   const [docEditStatus, setDocEditStatus] = useState("");
   const [docEditSaving, setDocEditSaving] = useState(false);
 
-    // Word-like Notes (rich text) - stored locally per document
-  const NOTE_KEY = `aiorg_note_html_doc_${docId}`;
-
+  // Notes (Word-like) stored locally per document
   const [notesOpen, setNotesOpen] = useState(false);
   const [noteHtml, setNoteHtml] = useState<string>("<p></p>");
   const [noteText, setNoteText] = useState<string>("");
   const [noteStatus, setNoteStatus] = useState<string>("");
   const [noteDirty, setNoteDirty] = useState<boolean>(false);
 
+  // local HTML per segment
+  const segHtmlKey = (segId: number) => `aiorg_seg_html_${segId}`;
 
   const canSegment = parseStatus === "ok";
 
@@ -180,21 +157,26 @@ export default function DocumentWorkspace() {
     setStatus("Loading document...");
     try {
       const d = await getDocument(docId);
-      setDocText(d.text ?? "");
+      const text = d.text ?? "";
+      setDocText(text);
+
       if (!filename && d.filename) setFilename(d.filename);
-            // Load Notes HTML (localStorage). If none exists, seed from doc text (non-destructive).
-      const stored = localStorage.getItem(`aiorg_note_html_doc_${docId}`);
-      if (stored && stored.trim()) {
-        setNoteHtml(stored);
-      } else {
-        setNoteHtml(plainTextToHtml(d.text ?? ""));
-      }
-      setNoteDirty(false);
-      setNoteStatus("");
 
       setParseStatus(d.parse_status ?? "pending");
       setParseError((d.parse_error as any) ?? null);
       setSourceType((d.source_type as any) ?? null);
+
+      // Notes load (local). If none, seed from doc (non-destructive)
+      const stored = localStorage.getItem(`aiorg_note_html_doc_${docId}`);
+      if (stored && stored.trim()) {
+        setNoteHtml(stored);
+        setNoteText(htmlToPlainText(stored));
+      } else {
+        setNoteHtml(plainTextToHtml(text));
+        setNoteText(text);
+      }
+      setNoteDirty(false);
+      setNoteStatus("");
 
       setStatus("");
     } catch (e: any) {
@@ -271,9 +253,11 @@ export default function DocumentWorkspace() {
     try {
       await deleteSegment(seg.id);
       setSegments((prev) => prev.filter((x) => x.id !== seg.id));
+
       if (selectedSegId === seg.id) setSelectedSegId(null);
       if (openSeg?.id === seg.id) setOpenSeg(null);
       if (manualOpenSeg?.id === seg.id) setManualOpenSeg(null);
+
       setStatus("Chunk deleted.");
       await loadSummary();
     } catch (e: any) {
@@ -281,7 +265,6 @@ export default function DocumentWorkspace() {
     }
   }
 
-  // manual selection capture
   function captureManualSelection() {
     const pre = manualPreRef.current;
     if (!pre) return;
@@ -318,13 +301,20 @@ export default function DocumentWorkspace() {
     }
   }
 
-  // chunk edit modal
   function openChunkEditor(seg: SegmentDTO) {
     setChunkEditSeg(seg);
     setChunkEditTitle(seg.title ?? "");
     setChunkEditStart(typeof seg.start === "number" ? seg.start : 0);
     setChunkEditEnd(typeof seg.end === "number" ? seg.end : 0);
-    setChunkEditContent(seg.content ?? "");
+
+    const plain = seg.content ?? "";
+    setChunkEditContent(plain);
+
+    const storedHtml = localStorage.getItem(segHtmlKey(seg.id));
+    const html = storedHtml && storedHtml.trim() ? storedHtml : plainTextToHtml(plain);
+    setChunkEditHtml(html);
+
+    setChunkEditDirty(false);
     setChunkEditStatus("");
     setChunkEditSyncFromDoc(true);
     setChunkEditOpen(true);
@@ -333,14 +323,22 @@ export default function DocumentWorkspace() {
   function captureChunkSelection() {
     const pre = chunkEditPreRef.current;
     if (!pre) return;
+
     const info = computeSelectionFromPre(pre, docText);
     if (!info) {
       setChunkEditStatus("No selection.");
       return;
     }
+
     setChunkEditStart(info.start);
     setChunkEditEnd(info.end);
-    if (chunkEditSyncFromDoc) setChunkEditContent(info.text);
+
+    if (chunkEditSyncFromDoc) {
+      setChunkEditContent(info.text);
+      setChunkEditHtml(plainTextToHtml(info.text));
+      setChunkEditDirty(true);
+    }
+
     setChunkEditStatus(`Selected ${info.end - info.start} chars from document.`);
   }
 
@@ -349,6 +347,7 @@ export default function DocumentWorkspace() {
 
     try {
       setChunkEditStatus("Saving...");
+
       const patch: any = {
         title: chunkEditTitle.trim() ? chunkEditTitle.trim() : "",
         content: chunkEditContent,
@@ -368,13 +367,21 @@ export default function DocumentWorkspace() {
 
       setChunkEditSeg(updated);
       setChunkEditStatus("Saved ✅");
+
+      // persist HTML locally for viewing
+      try {
+        localStorage.setItem(segHtmlKey(updated.id), chunkEditHtml);
+        setChunkEditDirty(false);
+      } catch {
+        // ignore
+      }
+
       await loadSummary();
     } catch (e: any) {
       setChunkEditStatus(e?.message ?? "Save failed");
     }
   }
 
-  // document edit modal
   function openDocEditor() {
     setDocEditText(docText);
     setDocEditStatus("");
@@ -388,13 +395,10 @@ export default function DocumentWorkspace() {
       setDocEditStatus("Saving...");
       await patchDocument(docId, { text: docEditText });
 
-      // reload doc (keeps parse fields consistent with backend)
-      await loadDocument();
-
+      await loadDocument(); // refresh parse fields too
       setDocEditStatus("Saved ✅");
       setDocEditOpen(false);
 
-      // note: segments might be out-of-sync after text edit; user can re-segment
       await loadSummary();
     } catch (e: any) {
       setDocEditSaving(false);
@@ -402,8 +406,43 @@ export default function DocumentWorkspace() {
     }
   }
 
+  function saveNoteLocal() {
+    try {
+      localStorage.setItem(`aiorg_note_html_doc_${docId}`, noteHtml);
+      setNoteDirty(false);
+      setNoteStatus("Notes saved locally ✅");
+    } catch (e: any) {
+      setNoteStatus(`Failed to save notes: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  function resetNoteFromDocument() {
+    setNoteHtml(plainTextToHtml(docText));
+    setNoteText(docText);
+    setNoteDirty(true);
+    setNoteStatus("Notes replaced from current document text (not saved yet).");
+  }
+
+  async function applyNoteToDocumentText() {
+    const ok = window.confirm(
+      "Apply Notes to Document TEXT?\n\nThis will overwrite the document text with the editor plain-text, and your segment offsets may become invalid.\nYou will likely need to re-run segmentation.\n\nContinue?"
+    );
+    if (!ok) return;
+
+    try {
+      setStatus("Applying notes to document...");
+      await patchDocument(docId, { text: noteText });
+      await loadDocument();
+      await loadSummary();
+      setStatus("Applied notes to document ✅");
+    } catch (e: any) {
+      setStatus(e?.message ?? "Failed to apply notes to document");
+    }
+  }
+
   useEffect(() => {
     if (!Number.isFinite(docId)) return;
+
     loadDocument();
     loadSummary();
 
@@ -422,8 +461,8 @@ export default function DocumentWorkspace() {
 
   const visibleBySource = useMemo(() => {
     if (sourceFilter === "all") return segments;
-    if (sourceFilter === "manual") return segments.filter((s) => !!s.isManual);
-    return segments.filter((s) => !s.isManual);
+    if (sourceFilter === "manual") return segments.filter((s) => !!(s as any).isManual);
+    return segments.filter((s) => !(s as any).isManual);
   }, [segments, sourceFilter]);
 
   const filteredSegments = useMemo(() => {
@@ -444,8 +483,8 @@ export default function DocumentWorkspace() {
     if (!docText) return { before: "", mid: "", after: "" };
 
     const s = selectedSeg;
-    const start = typeof s?.start === "number" ? s.start : null;
-    const end = typeof s?.end === "number" ? s.end : null;
+    const start = typeof (s as any)?.start === "number" ? (s as any).start : null;
+    const end = typeof (s as any)?.end === "number" ? (s as any).end : null;
 
     if (start === null || end === null || start < 0 || end <= start || end > docText.length) {
       return { before: docText, mid: "", after: "" };
@@ -465,37 +504,29 @@ export default function DocumentWorkspace() {
 
   useEffect(() => {
     if (openSeg) return;
-    if (listScrollRef.current) {
-      listScrollRef.current.scrollTop = lastScrollTopRef.current;
-    }
+    if (listScrollRef.current) listScrollRef.current.scrollTop = lastScrollTopRef.current;
   }, [openSeg]);
 
   useEffect(() => {
     if (manualOpenSeg) return;
-    if (manualListScrollRef.current) {
-      manualListScrollRef.current.scrollTop = manualLastScrollTopRef.current;
-    }
+    if (manualListScrollRef.current) manualListScrollRef.current.scrollTop = manualLastScrollTopRef.current;
   }, [manualOpenSeg]);
 
   function handleSelect(seg: SegmentDTO) {
     if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
-    clickTimerRef.current = window.setTimeout(() => {
-      setSelectedSegId(seg.id);
-    }, 170);
+    clickTimerRef.current = window.setTimeout(() => setSelectedSegId(seg.id), 170);
   }
 
   function handleOpen(seg: SegmentDTO) {
     if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
     setSelectedSegId(seg.id);
 
-    if (listScrollRef.current) {
-      lastScrollTopRef.current = listScrollRef.current.scrollTop;
-    }
+    if (listScrollRef.current) lastScrollTopRef.current = listScrollRef.current.scrollTop;
     setOpenSeg(seg);
   }
 
   const manualSegments = useMemo(() => {
-    return segments.filter((s) => !!s.isManual && s.mode === mode);
+    return segments.filter((s) => !!(s as any).isManual && (s as any).mode === mode);
   }, [segments, mode]);
 
   function manualHandleSelect(seg: SegmentDTO) {
@@ -509,9 +540,7 @@ export default function DocumentWorkspace() {
   function manualHandleOpen(seg: SegmentDTO) {
     if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
     setSelectedSegId(seg.id);
-    if (manualListScrollRef.current) {
-      manualLastScrollTopRef.current = manualListScrollRef.current.scrollTop;
-    }
+    if (manualListScrollRef.current) manualLastScrollTopRef.current = manualListScrollRef.current.scrollTop;
     setManualOpenSeg(seg);
   }
 
@@ -525,6 +554,9 @@ export default function DocumentWorkspace() {
         overflow: "hidden",
         background: "#0b0e14",
         color: "#eaeaea",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
       }}
     >
       {/* Top bar */}
@@ -535,6 +567,7 @@ export default function DocumentWorkspace() {
           display: "flex",
           alignItems: "center",
           gap: 12,
+          flex: "0 0 auto",
         }}
       >
         <b style={{ fontSize: 16 }}>Document #{docId}</b>
@@ -549,7 +582,7 @@ export default function DocumentWorkspace() {
       </div>
 
       {/* Ingest banner */}
-      <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+      <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
             <b>Ingest:</b> {badge(parseStatus)}
@@ -569,13 +602,14 @@ export default function DocumentWorkspace() {
         ) : null}
       </div>
 
-      {/* 50/50 split */}
-      <div style={{ display: "flex", height: "calc(100vh - 56px - 60px)" }}>
+      {/* 50/50 split area */}
+      <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
         {/* Left: full document */}
         <div
           style={{
             flex: "1 1 50%",
             minWidth: 0,
+            minHeight: 0,
             borderRight: "1px solid rgba(255,255,255,0.10)",
             display: "flex",
             flexDirection: "column",
@@ -585,13 +619,13 @@ export default function DocumentWorkspace() {
             Full document
             {selectedSeg ? (
               <span style={{ marginLeft: 10, fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
-                — selected: #{(selectedSeg.orderIndex ?? 0) + 1} ({selectedSeg.mode}){" "}
-                {selectedSeg.isManual ? "• manual" : "• auto"}
+                — selected: #{(((selectedSeg as any).orderIndex ?? 0) as number) + 1} ({(selectedSeg as any).mode}){" "}
+                {(selectedSeg as any).isManual ? "• manual" : "• auto"}
               </span>
             ) : null}
           </div>
 
-          <div style={{ padding: 12, overflow: "auto" }}>
+          <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
             {docText ? (
               <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>
                 {highlightedDoc.before}
@@ -617,8 +651,18 @@ export default function DocumentWorkspace() {
         </div>
 
         {/* Right: workspace */}
-        <div style={{ flex: "1 1 50%", minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+        <div
+          className="ws-right"
+          style={{
+            flex: "1 1 50%",
+            minWidth: 0,
+            minHeight: 0,
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {/* TOP: controls / summary / filters */}
+          <div className="ws-top" style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <b>Workspace</b>
               <div style={{ flex: 1 }} />
@@ -661,55 +705,44 @@ export default function DocumentWorkspace() {
               >
                 Manual chunk
               </button>
-              <button
-                onClick={() => setNotesOpen((v) => !v)}
-                style={{ padding: "8px 10px" }}
-              >
+
+              <button onClick={() => setNotesOpen((v) => !v)} style={{ padding: "8px 10px" }}>
                 {notesOpen ? "Hide Word editor" : "Word editor"}
               </button>
-
             </div>
 
-            {/* Summary */}
+            {/* Compact one-liner summary */}
             <div
+              className="ws-summary compact"
               style={{
                 marginTop: 12,
-                padding: 10,
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "6px 10px",
                 border: "1px solid rgba(255,255,255,0.10)",
-                borderRadius: 10,
-                background: "rgba(255,255,255,0.03)",
+                borderRadius: 12,
+                background: "rgba(255,255,255,0.02)",
+                maxHeight: 34,
               }}
             >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <b style={{ fontSize: 13 }}>Segmentation summary</b>
-                <button onClick={loadSummary} style={{ padding: "6px 10px" }}>
-                  Refresh
-                </button>
+              <div style={{ flex: "1 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                <b>Segmentation:</b>{" "}
+                <span style={{ opacity: 0.9 }}>
+                  qa({summaryByMode.qa?.count ?? 0}) last {fmt(summaryByMode.qa?.lastSegmentedAt ?? null)} • paragraphs(
+                  {summaryByMode.paragraphs?.count ?? 0}) last {fmt(summaryByMode.paragraphs?.lastSegmentedAt ?? null)}
+                  {segmentsMeta
+                    ? ` • list: count=${segmentsMeta.count} mode=${segmentsMeta.mode} last_run=${fmt(segmentsMeta.last_run ?? null)}`
+                    : ""}
+                </span>
               </div>
-
-              <div style={{ marginTop: 8, display: "grid", gap: 6, fontSize: 13 }}>
-                {(["qa", "paragraphs"] as const).map((m) => {
-                  const row = summaryByMode[m];
-                  return (
-                    <div key={m} style={{ opacity: 0.9 }}>
-                      <span style={{ fontWeight: 700 }}>{m}</span>{" "}
-                      <span style={{ opacity: 0.8 }}>({row?.count ?? 0})</span>
-                      <span style={{ opacity: 0.7 }}> — last: {fmt(row?.lastSegmentedAt ?? null)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {segmentsMeta ? (
-                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.75 }}>
-                  <b>List meta:</b> count={segmentsMeta.count} • mode={segmentsMeta.mode} • last_run=
-                  {fmt(segmentsMeta.last_run ?? null)}
-                </div>
-              ) : null}
+              <button onClick={loadSummary} style={{ padding: "6px 10px", flex: "0 0 auto" }}>
+                Refresh
+              </button>
             </div>
 
             {/* Search + Source filter */}
-            <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
+            <div className="ws-filters" style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
               <select
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
@@ -726,6 +759,7 @@ export default function DocumentWorkspace() {
                 placeholder="Search chunks..."
                 style={{
                   flex: 1,
+                  minWidth: 0,
                   padding: "8px 10px",
                   borderRadius: 8,
                   border: "1px solid rgba(255,255,255,0.12)",
@@ -733,181 +767,194 @@ export default function DocumentWorkspace() {
                   color: "#eaeaea",
                 }}
               />
-              <button
-                onClick={() => setQuery("")}
-                disabled={!query}
-                style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}
-              >
+              <button onClick={() => setQuery("")} disabled={!query} style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}>
                 Clear
               </button>
             </div>
           </div>
 
-          {notesOpen ? (
-            <div
-              style={{
-                padding: 12,
-                borderTop: "1px solid rgba(255,255,255,0.08)",
-                borderBottom: "1px solid rgba(255,255,255,0.08)",
-                background: "rgba(255,255,255,0.02)",
-              }}
-            >
-              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-                <b>Word editor (Notes)</b>
-                <span style={{ fontSize: 12, opacity: 0.75 }}>{noteStatus}{noteDirty ? " • unsaved" : ""}</span>
-                <div style={{ flex: 1 }} />
-                <button onClick={saveNoteLocal} style={{ padding: "8px 10px" }}>
-                  Save notes
-                </button>
-                <button onClick={resetNoteFromDocument} style={{ padding: "8px 10px" }}>
-                  Copy from document
-                </button>
-                <button onClick={applyNoteToDocumentText} style={{ padding: "8px 10px" }}>
-                  Apply to document text
-                </button>
-              </div>
+          {/* BODY: notes area + chunks list/view */}
+          <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
+            {/* Left within workspace: chunks list/view */}
+            <div style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
+                {!openSeg ? (
+                  <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto" }}>
+                    <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
+                      <span>Chunks</span>
+                      <span style={{ opacity: 0.7, fontWeight: 400 }}>
+                        {segments.length ? `${filteredSegments.length}/${segments.length}` : "—"}
+                      </span>
+                    </div>
 
-              <div style={{ height: 360 }}>
-                <RichTextEditor
-                  valueHtml={noteHtml}
-                  onChange={({ html, text }) => {
-                    setNoteHtml(html);
-                    setNoteText(text);
-                    setNoteDirty(true);
-                  }}
-                  placeholder="Write notes here…"
-                />
-              </div>
+                    {!segments.length ? (
+                      <div style={{ padding: 12, opacity: 0.7 }}>No chunks loaded. Click “List segments”.</div>
+                    ) : !filteredSegments.length ? (
+                      <div style={{ padding: 12, opacity: 0.7 }}>No results.</div>
+                    ) : (
+                      <div style={{ padding: 8, display: "grid", gap: 8 }}>
+                        {filteredSegments.map((s: any) => {
+                          const active = selectedSegId === s.id;
+                          return (
+                            <div
+                              key={s.id}
+                              onClick={() => handleSelect(s)}
+                              onDoubleClick={() => handleOpen(s)}
+                              title="Click to select & highlight. Double-click to open."
+                              style={{
+                                cursor: "pointer",
+                                padding: 10,
+                                borderRadius: 10,
+                                border: "1px solid rgba(255,255,255,0.10)",
+                                background: active ? "rgba(114,255,191,0.10)" : "rgba(255,255,255,0.03)",
+                                userSelect: "none",
+                              }}
+                            >
+                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                                <b style={{ fontSize: 13 }}>
+                                  {(s.orderIndex ?? 0) + 1}. {s.title}
+                                  <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{s.isManual ? "manual" : "auto"}</span>
+                                </b>
 
-    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-      Notes are stored locally (browser). “Apply to document text” overwrites document text (segments may need re-run).
-    </div>
-  </div>
-) : null}
+                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
 
-          {/* Body */}
-          <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-            {!openSeg ? (
-              <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
-                <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
-                  <span>Chunks</span>
-                  <span style={{ opacity: 0.7, fontWeight: 400 }}>
-                    {segments.length ? `${filteredSegments.length}/${segments.length}` : "—"}
-                  </span>
-                </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openChunkEditor(s);
+                                    }}
+                                    style={{ padding: "4px 10px" }}
+                                  >
+                                    Edit
+                                  </button>
 
-                {!segments.length ? (
-                  <div style={{ padding: 12, opacity: 0.7 }}>No chunks loaded. Click “List segments”.</div>
-                ) : !filteredSegments.length ? (
-                  <div style={{ padding: 12, opacity: 0.7 }}>No results.</div>
-                ) : (
-                  <div style={{ padding: 8, display: "grid", gap: 8 }}>
-                    {filteredSegments.map((s) => {
-                      const active = selectedSegId === s.id;
-                      return (
-                        <div
-                          key={s.id}
-                          onClick={() => handleSelect(s)}
-                          onDoubleClick={() => handleOpen(s)}
-                          title="Click to select & highlight. Double-click to open."
-                          style={{
-                            cursor: "pointer",
-                            padding: 10,
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.10)",
-                            background: active ? "rgba(114,255,191,0.10)" : "rgba(255,255,255,0.03)",
-                            userSelect: "none",
-                          }}
-                        >
-                          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                            <b style={{ fontSize: 13 }}>
-                              {s.orderIndex + 1}. {s.title}
-                              <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>
-                                {s.isManual ? "manual" : "auto"}
-                              </span>
-                            </b>
-
-                            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                              <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
-
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  openChunkEditor(s);
-                                }}
-                                style={{ padding: "4px 10px" }}
-                              >
-                                Edit
-                              </button>
-
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSingle(s);
-                                }}
-                                style={{ padding: "4px 10px" }}
-                              >
-                                Delete
-                              </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteSingle(s);
+                                    }}
+                                    style={{ padding: "4px 10px" }}
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
                             </div>
-                          </div>
-                          <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
-                        </div>
-                      );
-                    })}
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                    <div
+                      style={{
+                        padding: 12,
+                        borderBottom: "1px solid rgba(255,255,255,0.08)",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      <b style={{ flex: 1 }}>
+                        {(((openSeg as any).orderIndex ?? 0) as number) + 1}. {(openSeg as any).title}{" "}
+                        <span style={{ fontSize: 12, opacity: 0.7 }}>{(openSeg as any).isManual ? "• manual" : "• auto"}</span>
+                      </b>
+
+                      <button onClick={() => openChunkEditor(openSeg)} style={{ padding: "8px 10px" }}>
+                        Edit
+                      </button>
+
+                      <button onClick={() => setOpenSeg(null)} style={{ padding: "8px 10px" }}>
+                        Back to list
+                      </button>
+                    </div>
+
+                    <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+                      <div
+                        style={{ lineHeight: 1.55 }}
+                        dangerouslySetInnerHTML={{
+                          __html: localStorage.getItem(segHtmlKey((openSeg as any).id)) || plainTextToHtml((openSeg as any).content || ""),
+                        }}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
-            ) : (
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-                <div
-                  style={{
-                    padding: 12,
-                    borderBottom: "1px solid rgba(255,255,255,0.08)",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                  }}
-                >
-                  <b style={{ flex: 1 }}>
-                    {openSeg.orderIndex + 1}. {openSeg.title}{" "}
-                    <span style={{ fontSize: 12, opacity: 0.7 }}>{openSeg.isManual ? "• manual" : "• auto"}</span>
-                  </b>
 
-                  <button onClick={() => openChunkEditor(openSeg)} style={{ padding: "8px 10px" }}>
-                    Edit
-                  </button>
-
-                  <button onClick={() => setOpenSeg(null)} style={{ padding: "8px 10px" }}>
-                    Back to list
-                  </button>
-                </div>
-
-                <div style={{ padding: 12, overflow: "auto" }}>
-                  <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>{openSeg.content}</pre>
-                </div>
+              <div style={{ padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, opacity: 0.7 }}>
+                Tip: Click = highlight. Double-click = open. Filter = All/Auto/Manual.
               </div>
-            )}
-          </div>
+            </div>
 
-          <div style={{ padding: 10, borderTop: "1px solid rgba(255,255,255,0.08)", fontSize: 12, opacity: 0.7 }}>
-            Tip: Click = highlight. Double-click = open. Filter = All/Auto/Manual.
+            {/* Right within workspace: notes editor (fills remaining height) */}
+            <div
+              className="ws-editor"
+              style={{
+                width: notesOpen ? 420 : 0,
+                transition: "width 180ms ease",
+                borderLeft: notesOpen ? "1px solid rgba(255,255,255,0.10)" : "none",
+                overflow: "hidden",
+                minHeight: 0,
+                flex: "0 0 auto",
+              }}
+            >
+              {notesOpen ? (
+                <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+                  <div
+                    style={{
+                      padding: 12,
+                      borderBottom: "1px solid rgba(255,255,255,0.08)",
+                      background: "rgba(255,255,255,0.02)",
+                      flex: "0 0 auto",
+                    }}
+                  >
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <b>Word editor (Notes)</b>
+                      <span style={{ fontSize: 12, opacity: 0.75 }}>
+                        {noteStatus}
+                        {noteDirty ? " • unsaved" : ""}
+                      </span>
+                      <div style={{ flex: 1 }} />
+                      <button onClick={saveNoteLocal} style={{ padding: "8px 10px" }}>
+                        Save notes
+                      </button>
+                      <button onClick={resetNoteFromDocument} style={{ padding: "8px 10px" }}>
+                        Copy from document
+                      </button>
+                      <button onClick={applyNoteToDocumentText} style={{ padding: "8px 10px" }}>
+                        Apply to document text
+                      </button>
+                    </div>
+                  </div>
+
+                  <div style={{ flex: "1 1 auto", minHeight: 0, padding: 12 }}>
+                    <RichTextEditor
+                      valueHtml={noteHtml}
+                      onChange={({ html, text }) => {
+                        setNoteHtml(html);
+                        setNoteText(text);
+                        setNoteDirty(true);
+                      }}
+                      placeholder="Write notes here…"
+                    />
+                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                      Notes are stored locally (browser). “Apply to document text” overwrites document text (segments may need re-run).
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Manual modal */}
       {manualOpen ? (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.55)",
-            display: "flex",
-            padding: 18,
-            zIndex: 50,
-          }}
-        >
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", padding: 18, zIndex: 50 }}>
           <div
             style={{
               flex: 1,
@@ -917,6 +964,7 @@ export default function DocumentWorkspace() {
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
+              minHeight: 0,
             }}
           >
             <div
@@ -926,6 +974,7 @@ export default function DocumentWorkspace() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
+                flex: "0 0 auto",
               }}
             >
               <b style={{ flex: 1 }}>Create manual chunk</b>
@@ -935,40 +984,35 @@ export default function DocumentWorkspace() {
               </button>
             </div>
 
-            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+            <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
               <div
                 style={{
                   flex: "1 1 50%",
                   minWidth: 0,
+                  minHeight: 0,
                   borderRight: "1px solid rgba(255,255,255,0.10)",
                   display: "flex",
                   flexDirection: "column",
                 }}
               >
-                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700 }}>
+                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700, flex: "0 0 auto" }}>
                   Select text below (drag). Then Save.
                 </div>
 
-                <div style={{ padding: 12, overflow: "auto" }}>
+                <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
                   <pre
                     ref={manualPreRef}
                     onMouseUp={captureManualSelection}
                     onKeyUp={captureManualSelection}
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      margin: 0,
-                      lineHeight: 1.6,
-                      userSelect: "text",
-                      cursor: "text",
-                    }}
+                    style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.6, userSelect: "text", cursor: "text" }}
                   >
                     {docText}
                   </pre>
                 </div>
               </div>
 
-              <div style={{ flex: "1 1 50%", minWidth: 0, display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              <div style={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                     <input
                       value={manualTitle}
@@ -1019,9 +1063,9 @@ export default function DocumentWorkspace() {
                   </div>
                 </div>
 
-                <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+                <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
                   {!manualOpenSeg ? (
-                    <div ref={manualListScrollRef} style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+                    <div ref={manualListScrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto" }}>
                       <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
                         <span>Saved manual chunks ({mode})</span>
                         <span style={{ opacity: 0.7, fontWeight: 400 }}>{manualSegments.length}</span>
@@ -1033,7 +1077,7 @@ export default function DocumentWorkspace() {
                         </div>
                       ) : (
                         <div style={{ padding: 8, display: "grid", gap: 8 }}>
-                          {manualSegments.map((s) => (
+                          {manualSegments.map((s: any) => (
                             <div
                               key={s.id}
                               onClick={() => manualHandleSelect(s)}
@@ -1080,7 +1124,7 @@ export default function DocumentWorkspace() {
                       )}
                     </div>
                   ) : (
-                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+                    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
                       <div
                         style={{
                           padding: 12,
@@ -1088,9 +1132,10 @@ export default function DocumentWorkspace() {
                           display: "flex",
                           alignItems: "center",
                           gap: 10,
+                          flex: "0 0 auto",
                         }}
                       >
-                        <b style={{ flex: 1 }}>{manualOpenSeg.title}</b>
+                        <b style={{ flex: 1 }}>{(manualOpenSeg as any).title}</b>
 
                         <button onClick={() => openChunkEditor(manualOpenSeg)} style={{ padding: "8px 10px" }}>
                           Edit
@@ -1101,8 +1146,15 @@ export default function DocumentWorkspace() {
                         </button>
                       </div>
 
-                      <div style={{ padding: 12, overflow: "auto" }}>
-                        <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>{manualOpenSeg.content}</pre>
+                      <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+                        <div
+                          style={{ lineHeight: 1.55 }}
+                          dangerouslySetInnerHTML={{
+                            __html:
+                              localStorage.getItem(segHtmlKey((manualOpenSeg as any).id)) ||
+                              plainTextToHtml((manualOpenSeg as any).content || ""),
+                          }}
+                        />
                       </div>
                     </div>
                   )}
@@ -1119,16 +1171,7 @@ export default function DocumentWorkspace() {
 
       {/* Chunk Edit modal */}
       {chunkEditOpen && chunkEditSeg ? (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.55)",
-            display: "flex",
-            padding: 18,
-            zIndex: 60,
-          }}
-        >
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", padding: 18, zIndex: 60 }}>
           <div
             style={{
               flex: 1,
@@ -1138,6 +1181,7 @@ export default function DocumentWorkspace() {
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
+              minHeight: 0,
             }}
           >
             <div
@@ -1147,33 +1191,35 @@ export default function DocumentWorkspace() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
+                flex: "0 0 auto",
               }}
             >
               <b style={{ flex: 1 }}>Edit chunk</b>
               <span style={{ fontSize: 12, opacity: 0.7 }}>
-                id={chunkEditSeg.id} • mode={chunkEditSeg.mode} • {chunkEditSeg.isManual ? "manual" : "auto"}
+                id={(chunkEditSeg as any).id} • mode={(chunkEditSeg as any).mode} • {(chunkEditSeg as any).isManual ? "manual" : "auto"}
               </span>
               <button onClick={() => setChunkEditOpen(false)} style={{ padding: "8px 10px" }}>
                 Close
               </button>
             </div>
 
-            <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+            <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
               {/* Left: document reselect */}
               <div
                 style={{
                   flex: "1 1 55%",
                   minWidth: 0,
+                  minHeight: 0,
                   borderRight: "1px solid rgba(255,255,255,0.10)",
                   display: "flex",
                   flexDirection: "column",
                 }}
               >
-                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700 }}>
+                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700, flex: "0 0 auto" }}>
                   Reselect from document (drag). Mouse up = capture.
                 </div>
 
-                <div style={{ padding: 12, overflow: "auto" }}>
+                <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
                   {(() => {
                     const parts = splitDocByRange(docText, chunkEditStart, chunkEditEnd);
                     return (
@@ -1203,10 +1249,13 @@ export default function DocumentWorkspace() {
                 </div>
               </div>
 
-              {/* Right: fields */}
-              <div style={{ flex: "1 1 45%", minWidth: 0, display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>{chunkEditStatus}</div>
+              {/* Right: fields + editor */}
+              <div style={{ flex: "1 1 45%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
+                    {chunkEditStatus}
+                    {chunkEditDirty ? " • unsaved" : ""}
+                  </div>
 
                   <div style={{ display: "grid", gap: 10 }}>
                     <div>
@@ -1275,27 +1324,43 @@ export default function DocumentWorkspace() {
                       />
                       When capturing selection, update content from doc slice
                     </label>
+                  </div>
+                </div>
 
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Content (copy/paste allowed)</div>
-                      <textarea
-                        value={chunkEditContent}
-                        onChange={(e) => setChunkEditContent(e.target.value)}
-                        rows={10}
-                        style={{
-                          width: "100%",
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: "#0f1420",
-                          color: "#eaeaea",
-                          resize: "vertical",
-                          lineHeight: 1.5,
+                <div style={{ padding: 12, flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+                  <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Content (copy/paste allowed)</div>
+
+                  <div className="chunk-editor-shell" style={{ flex: "1 1 auto", minHeight: 0 }}>
+                    <div className="chunk-rte" style={{ flex: "1 1 auto", minHeight: 0 }}>
+                      <RichTextEditor
+                        valueHtml={chunkEditHtml}
+                        onChange={({ html, text }) => {
+                          setChunkEditHtml(html);
+                          setChunkEditContent(text);
+                          setChunkEditDirty(true);
                         }}
+                        placeholder="Edit chunk content…"
                       />
                     </div>
+                  </div>
 
-                    <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                  <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 10 }}>
+                    <button
+                      onClick={() => {
+                        try {
+                          localStorage.setItem(segHtmlKey((chunkEditSeg as any).id), chunkEditHtml);
+                          setChunkEditDirty(false);
+                          setChunkEditStatus("Saved formatting locally ✅");
+                        } catch {
+                          setChunkEditStatus("Failed to save locally");
+                        }
+                      }}
+                      style={{ padding: "10px 12px" }}
+                    >
+                      Save formatting locally
+                    </button>
+
+                    <div style={{ display: "flex", gap: 10 }}>
                       <button onClick={() => setChunkEditOpen(false)} style={{ padding: "10px 12px" }}>
                         Cancel
                       </button>
@@ -1303,13 +1368,13 @@ export default function DocumentWorkspace() {
                         Save
                       </button>
                     </div>
-
-                    {!chunkEditSeg.isManual ? (
-                      <div style={{ fontSize: 12, opacity: 0.7 }}>
-                        Note: Editing AUTO chunks works, but re-running “Segment now” may regenerate AUTO chunks.
-                      </div>
-                    ) : null}
                   </div>
+
+                  {!(chunkEditSeg as any).isManual ? (
+                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 10 }}>
+                      Note: Editing AUTO chunks works, but re-running “Segment now” may regenerate AUTO chunks.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1319,16 +1384,7 @@ export default function DocumentWorkspace() {
 
       {/* Document Edit modal */}
       {docEditOpen ? (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.55)",
-            display: "flex",
-            padding: 18,
-            zIndex: 70,
-          }}
-        >
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", padding: 18, zIndex: 70 }}>
           <div
             style={{
               flex: 1,
@@ -1338,6 +1394,7 @@ export default function DocumentWorkspace() {
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
+              minHeight: 0,
             }}
           >
             <div
@@ -1347,6 +1404,7 @@ export default function DocumentWorkspace() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
+                flex: "0 0 auto",
               }}
             >
               <b style={{ flex: 1 }}>Edit document text</b>
@@ -1356,10 +1414,9 @@ export default function DocumentWorkspace() {
               </button>
             </div>
 
-            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flex: 1, minHeight: 0 }}>
+            <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10, flex: "1 1 auto", minHeight: 0 }}>
               <div style={{ fontSize: 12, opacity: 0.75 }}>
-                ⚠ Editing document text can invalidate existing segment start/end offsets. After saving, consider re-running
-                segmentation.
+                ⚠ Editing document text can invalidate existing segment start/end offsets. After saving, consider re-running segmentation.
               </div>
 
               <textarea
@@ -1382,11 +1439,7 @@ export default function DocumentWorkspace() {
                 <button onClick={() => setDocEditOpen(false)} style={{ padding: "10px 12px" }}>
                   Cancel
                 </button>
-                <button
-                  disabled={docEditSaving}
-                  onClick={saveDocEdit}
-                  style={{ padding: "10px 12px", opacity: docEditSaving ? 0.6 : 1 }}
-                >
+                <button disabled={docEditSaving} onClick={saveDocEdit} style={{ padding: "10px 12px", opacity: docEditSaving ? 0.6 : 1 }}>
                   Save
                 </button>
               </div>

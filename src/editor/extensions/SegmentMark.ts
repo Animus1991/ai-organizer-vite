@@ -1,3 +1,4 @@
+// C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\editor\extensions\SegmentMark.ts
 import { Mark, mergeAttributes } from "@tiptap/core";
 
 export const SegmentMark = Mark.create({

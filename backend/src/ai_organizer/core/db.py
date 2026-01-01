@@ -1,3 +1,4 @@
+# C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\backend\src\ai_organizer\core\db.py
 from __future__ import annotations
 
 from pathlib import Path

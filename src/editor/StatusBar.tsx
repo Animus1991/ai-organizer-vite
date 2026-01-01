@@ -1,14 +1,31 @@
 import React from "react";
-import type { Editor } from "@tiptap/react";
 
-export function StatusBar({ editor }: { editor: Editor }) {
-  const chars = editor.storage.characterCount?.characters?.() ?? 0;
-  const words = editor.storage.characterCount?.words?.() ?? 0;
+type Props = {
+  words: number;
+  chars: number;
+  onSaveLocal?: () => void;
+  onLoadLocal?: () => void;
+};
 
+export function StatusBar({ words, chars, onSaveLocal, onLoadLocal }: Props) {
   return (
-    <div className="rte-status">
-      <div>Words: {words}</div>
-      <div>Characters: {chars}</div>
+    <div className="statusbar">
+      <div className="statusbar__counts">
+        Words: {words} • Chars: {chars}
+      </div>
+
+      <div className="statusbar__actions">
+        {onLoadLocal && (
+          <button className="btn" onClick={onLoadLocal}>
+            Load local
+          </button>
+        )}
+        {onSaveLocal && (
+          <button className="btn primary" onClick={onSaveLocal}>
+            Save locally
+          </button>
+        )}
+      </div>
     </div>
   );
 }

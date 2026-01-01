@@ -1,27 +1,32 @@
+/* src/editor/editor.css */
+
+/* === RichTextEditor layout (must fill parent) === */
 .rte-root {
+  height: 100%;
+  min-height: 0;                 /* κρίσιμο σε flex layouts */
   display: flex;
   flex-direction: column;
   gap: 10px;
-  height: 100%;
-  min-height: 260px;
 }
 
+/* toolbar: fixed height */
 .rte-toolbar {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   padding: 10px;
-  border: 1px solid rgba(255,255,255,0.10);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 12px;
-  background: rgba(255,255,255,0.03);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .rte-btn {
   padding: 6px 10px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
   color: inherit;
   cursor: pointer;
   font-size: 13px;
@@ -37,14 +42,15 @@
   background: rgba(114, 255, 191, 0.12);
 }
 
+/* editor area: takes ALL remaining height and scrolls internally */
 .rte-editor {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;                 /* κρίσιμο */
   padding: 14px;
-  border: 1px solid rgba(255,255,255,0.10);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 12px;
-  background: rgba(255,255,255,0.02);
-  overflow: auto;
-  min-height: 180px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: auto;                /* scroll ΕΔΩ */
 }
 
 .rte-editor .ProseMirror {
@@ -56,22 +62,50 @@
   margin: 0 0 10px 0;
 }
 
-.rte-status {
+/* === StatusBar (new) === */
+.statusbar {
+  flex: 0 0 auto;
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255,255,255,0.10);
+  gap: 10px;
+  padding: 6px 10px;             /* πιο “λεπτό” */
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 12px;
-  background: rgba(255,255,255,0.02);
-  font-size: 12px;
-  opacity: 0.9;
+  background: rgba(255, 255, 255, 0.02);
 }
 
+.statusbar__counts {
+  opacity: 0.85;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.statusbar__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn {
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: rgba(114, 255, 191, 0.12);
+  border-color: rgba(114, 255, 191, 0.25);
+}
+
+/* === Find/Replace modal === */
 .rte-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -81,8 +115,8 @@
 .rte-modal {
   width: min(720px, 92vw);
   border-radius: 14px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(10,12,18,0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 12, 18, 0.98);
   padding: 14px;
 }
 
@@ -90,7 +124,23 @@
   width: 100%;
   padding: 10px;
   border-radius: 10px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
   color: inherit;
+}
+
+/* === Chunk editor helpers (modal) ===
+   Βάζεις className="chunk-editor-shell" στο wrapper που θες να γεμίζει.
+*/
+.chunk-editor-shell {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chunk-rte {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden; /* scroll θα γίνει μέσα στο .rte-editor */
 }

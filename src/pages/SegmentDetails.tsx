@@ -1,3 +1,4 @@
+// C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\pages\SegmentDetails.tsx
 import React, { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getSegment, SegmentDTO, deleteSegment, patchManualSegment } from "../lib/api";

@@ -1,3 +1,4 @@
+// C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\editor\utils\text.ts
 export function normalizePlainText(input: string): string {
   let s = (input ?? "").replace(/\r\n/g, "\n").replace(/\u00A0/g, " ");
   // trim trailing spaces per line
