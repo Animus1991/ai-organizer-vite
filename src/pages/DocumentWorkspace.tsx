@@ -136,12 +136,14 @@ export default function DocumentWorkspace() {
   const [chunkEditHtml, setChunkEditHtml] = useState<string>("<p></p>");
   const [chunkEditDirty, setChunkEditDirty] = useState<boolean>(false);
   const [chunkEditStatus, setChunkEditStatus] = useState("");
+  const [chunkEditFolderId, setChunkEditFolderId] = useState<string | null>(null);
   const chunkEditPreRef = useRef<HTMLPreElement | null>(null);
   const [chunkEditSyncFromDoc, setChunkEditSyncFromDoc] = useState(true);
 
   // document edit modal
   const [docEditOpen, setDocEditOpen] = useState(false);
   const [docEditText, setDocEditText] = useState("");
+  const [docEditHtml, setDocEditHtml] = useState<string>("<p></p>");
   const [docEditStatus, setDocEditStatus] = useState("");
   const [docEditSaving, setDocEditSaving] = useState(false);
 
@@ -325,6 +327,9 @@ export default function DocumentWorkspace() {
     const html = storedHtml && storedHtml.trim() ? storedHtml : plainTextToHtml(plain);
     setChunkEditHtml(html);
 
+    const currentFolderId = folderMap[String(seg.id)] ?? null;
+    setChunkEditFolderId(currentFolderId);
+
     setChunkEditDirty(false);
     setChunkEditStatus("");
     setChunkEditSyncFromDoc(true);
@@ -379,6 +384,10 @@ export default function DocumentWorkspace() {
       setChunkEditSeg(updated);
       setChunkEditStatus("Saved ✅");
 
+      // Update folder assignment
+      setSegmentFolder(docId, updated.id, chunkEditFolderId);
+      setFolderMap(loadFolderMap(docId));
+
       // persist HTML locally for viewing
       try {
         localStorage.setItem(segHtmlKey(updated.id), chunkEditHtml);
@@ -395,6 +404,7 @@ export default function DocumentWorkspace() {
 
   function openDocEditor() {
     setDocEditText(docText);
+    setDocEditHtml(plainTextToHtml(docText));
     setDocEditStatus("");
     setDocEditSaving(false);
     setDocEditOpen(true);
@@ -813,7 +823,7 @@ export default function DocumentWorkspace() {
           {/* BODY: notes area + chunks list/view */}
           <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
             {/* Left within workspace: chunks list/view */}
-            <div style={{ flex: "1 1 auto", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+            <div style={{ flex: notesOpen ? "1 1 50%" : "1 1 auto", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
               <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
                 {!openSeg ? (
                   <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto" }}>
@@ -851,10 +861,41 @@ export default function DocumentWorkspace() {
                                 <b style={{ fontSize: 13 }}>
                                   {(s.orderIndex ?? 0) + 1}. {s.title}
                                   <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{s.isManual ? "manual" : "auto"}</span>
+                                  {folderMap[String(s.id)] ? (
+                                    <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7, color: "#72ffbf" }}>
+                                      📁 {folders.find((f) => f.id === folderMap[String(s.id)])?.name ?? "?"}
+                                    </span>
+                                  ) : null}
                                 </b>
 
                                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                   <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
+
+                                  <select
+                                    value={folderMap[String(s.id)] ?? "none"}
+                                    onChange={(e) => {
+                                      e.stopPropagation();
+                                      const folderId = e.target.value === "none" ? null : e.target.value;
+                                      setSegmentFolder(docId, s.id, folderId);
+                                      setFolderMap(loadFolderMap(docId));
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      border: "1px solid rgba(255,255,255,0.12)",
+                                      background: "#0f1420",
+                                      color: "#eaeaea",
+                                      fontSize: 11,
+                                    }}
+                                  >
+                                    <option value="none">No folder</option>
+                                    {folders.map((f) => (
+                                      <option key={f.id} value={f.id}>
+                                        {f.name}
+                                      </option>
+                                    ))}
+                                  </select>
 
                                   <button
                                     onClick={(e) => {
@@ -931,12 +972,12 @@ export default function DocumentWorkspace() {
             <div
               className="ws-editor"
               style={{
-                width: notesOpen ? 420 : 0,
+                width: notesOpen ? "50%" : 0,
                 transition: "width 180ms ease",
                 borderLeft: notesOpen ? "1px solid rgba(255,255,255,0.10)" : "none",
                 overflow: "hidden",
                 minHeight: 0,
-                flex: "0 0 auto",
+                flex: notesOpen ? "1 1 50%" : "0 0 auto",
               }}
             >
               {notesOpen ? (
@@ -1130,9 +1171,42 @@ export default function DocumentWorkspace() {
                               }}
                             >
                               <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                                <b style={{ fontSize: 13 }}>{s.title}</b>
+                                <b style={{ fontSize: 13 }}>
+                                  {s.title}
+                                  {folderMap[String(s.id)] ? (
+                                    <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7, color: "#72ffbf" }}>
+                                      📁 {folders.find((f) => f.id === folderMap[String(s.id)])?.name ?? "?"}
+                                    </span>
+                                  ) : null}
+                                </b>
 
                                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                  <select
+                                    value={folderMap[String(s.id)] ?? "none"}
+                                    onChange={(e) => {
+                                      e.stopPropagation();
+                                      const folderId = e.target.value === "none" ? null : e.target.value;
+                                      setSegmentFolder(docId, s.id, folderId);
+                                      setFolderMap(loadFolderMap(docId));
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      padding: "4px 8px",
+                                      borderRadius: 6,
+                                      border: "1px solid rgba(255,255,255,0.12)",
+                                      background: "#0f1420",
+                                      color: "#eaeaea",
+                                      fontSize: 11,
+                                    }}
+                                  >
+                                    <option value="none">No folder</option>
+                                    {folders.map((f) => (
+                                      <option key={f.id} value={f.id}>
+                                        {f.name}
+                                      </option>
+                                    ))}
+                                  </select>
+
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation();
@@ -1317,6 +1391,29 @@ export default function DocumentWorkspace() {
                       />
                     </div>
 
+                    <div>
+                      <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Folder</div>
+                      <select
+                        value={chunkEditFolderId ?? "none"}
+                        onChange={(e) => setChunkEditFolderId(e.target.value === "none" ? null : e.target.value)}
+                        style={{
+                          width: "100%",
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(255,255,255,0.12)",
+                          background: "#0f1420",
+                          color: "#eaeaea",
+                        }}
+                      >
+                        <option value="none">No folder</option>
+                        {folders.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div style={{ display: "flex", gap: 10 }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Start</div>
@@ -1456,21 +1553,16 @@ export default function DocumentWorkspace() {
                 ⚠ Editing document text can invalidate existing segment start/end offsets. After saving, consider re-running segmentation.
               </div>
 
-              <textarea
-                value={docEditText}
-                onChange={(e) => setDocEditText(e.target.value)}
-                style={{
-                  flex: 1,
-                  width: "100%",
-                  padding: "12px",
-                  borderRadius: 12,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: "#0f1420",
-                  color: "#eaeaea",
-                  resize: "none",
-                  lineHeight: 1.5,
-                }}
-              />
+              <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <RichTextEditor
+                  valueHtml={docEditHtml}
+                  onChange={({ html, text }) => {
+                    setDocEditHtml(html);
+                    setDocEditText(text);
+                  }}
+                  placeholder="Edit document text…"
+                />
+              </div>
 
               <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
                 <button onClick={() => setDocEditOpen(false)} style={{ padding: "10px 12px" }}>
