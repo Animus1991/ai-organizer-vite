@@ -12,6 +12,7 @@ import {
   UploadResponseDTO,
 } from "../lib/api";
 import { useNavigate } from "react-router-dom";
+import SegmentationSummaryBar from "../components/SegmentationSummaryBar";
 
 type SegmentRow = {
   id: number;
@@ -212,9 +213,10 @@ export default function Home() {
     setOpenSeg(null);
 
     try {
-      const items = await listSegments(documentId, mode);
+      const response = await listSegments(documentId, mode);
+      const items = Array.isArray(response.items) ? response.items : [];
       setModeFilter(mode);
-      setSegments(items as any);
+      setSegments(items);
       setStatus(`Loaded ${items.length} segments`);
     } catch (e: any) {
       setStatus(e?.message ?? "List failed");
@@ -394,37 +396,18 @@ export default function Home() {
 
       {/* Segmentation summary */}
       {documentId && (
-        <div
-          style={{
-            marginTop: 14,
-            padding: 12,
-            border: "1px solid #3a3a3a",
-            borderRadius: 10,
-            background: "rgba(255,255,255,0.03)",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <b>Segmentation summary</b>
-            <button onClick={() => loadSegmentationSummary(documentId)} style={{ padding: "6px 10px", opacity: 0.9 }}>
-              Refresh summary
-            </button>
-          </div>
-
-          <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
-            {(["qa", "paragraphs"] as const).map((m) => {
-              const row = segSummaryByMode[m];
-              const count = row?.count ?? 0;
-              const last = row?.lastSegmentedAt ?? null;
-              return (
-                <div key={m} style={{ opacity: 0.92 }}>
-                  <span style={{ fontWeight: 700 }}>{m}</span> <span style={{ opacity: 0.85 }}>({count})</span>
-                  <span style={{ opacity: 0.7 }}> — last segmented: {fmt(last)}</span>
-                </div>
-              );
-            })}
-          </div>
+        <div style={{ marginTop: 14 }}>
+          <SegmentationSummaryBar
+            qa={{ count: segSummaryByMode.qa?.count ?? 0, last: segSummaryByMode.qa?.lastSegmentedAt ?? null }}
+            paragraphs={{ count: segSummaryByMode.paragraphs?.count ?? 0, last: segSummaryByMode.paragraphs?.lastSegmentedAt ?? null }}
+            onRefresh={() => {
+              if (documentId) loadSegmentationSummary(documentId);
+            }}
+            drawerTitle={`Document #${documentId} • Segmentation`}
+          />
         </div>
       )}
+
 
       <hr style={{ margin: "24px 0" }} />
 

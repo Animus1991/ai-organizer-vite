@@ -121,3 +121,76 @@ button:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* === One-liner bar (summary) === */
+.one-liner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+  max-height: 34px;
+}
+
+.one-liner__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.one-liner__actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* === Drawer === */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 4000;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-panel {
+  height: 100vh;
+  background: #0b0e14;
+  border-left: 1px solid rgba(255,255,255,0.12);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-header {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drawer-title {
+  font-weight: 800;
+  flex: 1;
+}
+
+.drawer-close {
+  padding: 8px 10px;
+}
+
+.drawer-body {
+  padding: 12px;
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.drawer-footer {
+  padding: 12px;
+  border-top: 1px solid rgba(255,255,255,0.10);
+}

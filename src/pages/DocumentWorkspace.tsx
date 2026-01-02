@@ -17,6 +17,10 @@ import {
 } from "../lib/api";
 import { RichTextEditor } from "../editor/RichTextEditor";
 import { plainTextToHtml } from "../editor/utils/text";
+import SegmentationSummaryBar from "../components/SegmentationSummaryBar";
+import FolderManagerDrawer from "../components/FolderManagerDrawer";
+import { loadFolders, loadFolderMap, setSegmentFolder, FolderDTO } from "../lib/segmentFolders";
+import OutlineWizard from "../components/OutlineWizard";
 
 type SourceFilter = "all" | "auto" | "manual";
 type SelInfo = { start: number; end: number; text: string };
@@ -150,6 +154,13 @@ export default function DocumentWorkspace() {
 
   // local HTML per segment
   const segHtmlKey = (segId: number) => `aiorg_seg_html_${segId}`;
+
+  const [foldersOpen, setFoldersOpen] = useState(false);
+  const [folders, setFolders] = useState<FolderDTO[]>([]);
+  const [folderFilter, setFolderFilter] = useState<string>("all"); // all | none | <folderId>
+  const [folderMap, setFolderMap] = useState<Record<string, string>>({});
+
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const canSegment = parseStatus === "ok";
 
@@ -446,6 +457,14 @@ export default function DocumentWorkspace() {
     loadDocument();
     loadSummary();
 
+    try {
+    setFolders(loadFolders(docId));
+    setFolderMap(loadFolderMap(docId));
+  } catch {
+    setFolders([]);
+    setFolderMap({});
+  }
+
     return () => {
       if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
       if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
@@ -467,12 +486,23 @@ export default function DocumentWorkspace() {
 
   const filteredSegments = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return visibleBySource;
+    const folderOk = (segId: number) => {
+      const fId = folderMap[String(segId)] ?? null;
+      if (folderFilter === "all") return true;
+      if (folderFilter === "none") return !fId;
+      return fId === folderFilter;
+    };
+
+    if (!q) {
+      return visibleBySource.filter((s) => folderOk(s.id));
+    }
+
     return visibleBySource.filter((s) => {
+      if (!folderOk(s.id)) return false;
       const hay = `${s.title ?? ""} ${s.content ?? ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [visibleBySource, query]);
+  }, [visibleBySource, query, folderFilter, folderMap]);
 
   const selectedSeg = useMemo(() => {
     if (!selectedSegId) return null;
@@ -712,34 +742,20 @@ export default function DocumentWorkspace() {
             </div>
 
             {/* Compact one-liner summary */}
-            <div
-              className="ws-summary compact"
-              style={{
-                marginTop: 12,
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "6px 10px",
-                border: "1px solid rgba(255,255,255,0.10)",
-                borderRadius: 12,
-                background: "rgba(255,255,255,0.02)",
-                maxHeight: 34,
+            <SegmentationSummaryBar
+              qa={{ count: summaryByMode.qa?.count ?? 0, last: summaryByMode.qa?.lastSegmentedAt ?? null }}
+              paragraphs={{ count: summaryByMode.paragraphs?.count ?? 0, last: summaryByMode.paragraphs?.lastSegmentedAt ?? null }}
+              metaLine={
+                segmentsMeta
+                  ? `list: count=${segmentsMeta.count} mode=${segmentsMeta.mode} last_run=${segmentsMeta.last_run ?? "—"}`
+                  : undefined
+              }
+              onRefresh={() => {
+                loadSummary();
               }}
-            >
-              <div style={{ flex: "1 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                <b>Segmentation:</b>{" "}
-                <span style={{ opacity: 0.9 }}>
-                  qa({summaryByMode.qa?.count ?? 0}) last {fmt(summaryByMode.qa?.lastSegmentedAt ?? null)} • paragraphs(
-                  {summaryByMode.paragraphs?.count ?? 0}) last {fmt(summaryByMode.paragraphs?.lastSegmentedAt ?? null)}
-                  {segmentsMeta
-                    ? ` • list: count=${segmentsMeta.count} mode=${segmentsMeta.mode} last_run=${fmt(segmentsMeta.last_run ?? null)}`
-                    : ""}
-                </span>
-              </div>
-              <button onClick={loadSummary} style={{ padding: "6px 10px", flex: "0 0 auto" }}>
-                Refresh
-              </button>
-            </div>
+              drawerTitle={`Document #${docId} • Segmentation`}
+            />
+
 
             {/* Search + Source filter */}
             <div className="ws-filters" style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
@@ -752,6 +768,27 @@ export default function DocumentWorkspace() {
                 <option value="auto">Auto only</option>
                 <option value="manual">Manual only</option>
               </select>
+              <select
+                value={folderFilter}
+                onChange={(e) => setFolderFilter(e.target.value)}
+                style={{ padding: "8px 10px" }}
+              >
+                <option value="all">All folders</option>
+                <option value="none">Unfoldered</option>
+                {folders.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+
+              <button onClick={() => setFoldersOpen(true)} style={{ padding: "8px 10px" }}>
+                Folders
+              </button>
+
+              <button onClick={() => setWizardOpen(true)} style={{ padding: "8px 10px" }}>
+                Outline Wizard
+              </button>
 
               <input
                 value={query}
@@ -1447,6 +1484,25 @@ export default function DocumentWorkspace() {
           </div>
         </div>
       ) : null}
+
+      {/* Folder Manager Drawer */}
+      <FolderManagerDrawer
+        docId={docId}
+        open={foldersOpen}
+        onClose={() => setFoldersOpen(false)}
+        onChanged={(updatedFolders) => {
+          setFolders(updatedFolders);
+          setFolderMap(loadFolderMap(docId));
+        }}
+      />
+
+      {/* Outline Wizard */}
+      <OutlineWizard
+        open={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+        documentId={docId}
+        segments={segments}
+      />
     </div>
   );
 }
