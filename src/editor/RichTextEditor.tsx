@@ -6,11 +6,18 @@ import Underline from "@tiptap/extension-underline";
 import CharacterCount from "@tiptap/extension-character-count";
 import Placeholder from "@tiptap/extension-placeholder";
 import Highlight from "@tiptap/extension-highlight";
+import TextAlign from "@tiptap/extension-text-align";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
+import FontFamily from "@tiptap/extension-font-family";
+import Subscript from "@tiptap/extension-subscript";
+import Superscript from "@tiptap/extension-superscript";
 
 import { Toolbar } from "./Toolbar";
 import { StatusBar } from "./StatusBar";
 import { SegmentMark } from "./extensions/SegmentMark";
 import { CommentMark } from "./extensions/CommentMark";
+import { FontSize } from "./extensions/FontSize";
 
 import "./editor.css";
 
@@ -31,11 +38,22 @@ export function RichTextEditor({
 }: Props) {
   const extensions = useMemo(
     () => [
-      // Αν το StarterKit στο δικό σου setup “κουβαλάει” underline,
+      // Αν το StarterKit στο δικό σου setup "κουβαλάει" underline,
       // αυτό το configure το απενεργοποιεί ώστε να μην διπλο-δηλώνεται.
       StarterKit.configure({ underline: false } as any),
       Underline,
       Highlight,
+      TextStyle,
+      Color,
+      FontFamily.configure({
+        types: ["textStyle"],
+      }),
+      TextAlign.configure({
+        types: ["heading", "paragraph"],
+      }),
+      Subscript,
+      Superscript,
+      FontSize,
       SegmentMark,
       CommentMark,
       CharacterCount,
