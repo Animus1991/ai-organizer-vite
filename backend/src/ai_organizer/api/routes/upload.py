@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -34,6 +34,12 @@ UNSUPPORTED_DOC_EXTS = {".doc"}  # explicitly reject with clean message
 # -----------------------------
 # Response schemas
 # -----------------------------
+class UploadError(BaseModel):
+    code: str
+    message: str
+    supported_extensions: List[str]
+
+
 class UploadOut(BaseModel):
     uploadId: int
     documentId: int
@@ -208,6 +214,28 @@ async def upload(
     if not file or not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename")
 
+    # File type validation - return 422 for unsupported types
+    ext = Path(file.filename).suffix.lower()
+    if ext in UNSUPPORTED_DOC_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=UploadError(
+                code="unsupported_file_type",
+                message=f"Unsupported .doc file. Please upload .docx instead.",
+                supported_extensions=sorted(SUPPORTED_EXTS)
+            ).dict()
+        )
+    
+    if ext not in SUPPORTED_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=UploadError(
+                code="unsupported_file_type",
+                message=f"Unsupported file type: {ext}",
+                supported_extensions=sorted(SUPPORTED_EXTS)
+            ).dict()
+        )
+
     upload_dir: Path = settings.AIORG_UPLOAD_DIR
     upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -272,44 +300,31 @@ async def upload(
         parse_error: Optional[str] = None
         processed_path: Optional[str] = None
 
-        # Explicit unsupported case (.doc)
-        if ext in UNSUPPORTED_DOC_EXTS:
-            source_type = "unsupported_doc"
-            parse_status, parse_error = _fail_doc_fields(ext)
+        # Supported types only (unsupported files already rejected above)
+        try:
+            if ext in [".txt", ".md"]:
+                raw_text = read_text_file(target)
+                source_type = "text" if ext == ".txt" else "md"
 
-        # Supported types
-        elif ext in SUPPORTED_EXTS:
-            try:
-                if ext in [".txt", ".md"]:
-                    raw_text = read_text_file(target)
-                    source_type = "text" if ext == ".txt" else "md"
+            elif ext == ".json":
+                source_type = "chatgpt_json"
+                raw = read_text_file(target)
+                raw_text = parse_chatgpt_export_json(raw)
 
-                elif ext == ".json":
-                    source_type = "chatgpt_json"
-                    raw = read_text_file(target)
-                    raw_text = parse_chatgpt_export_json(raw)
+            elif ext == ".docx":
+                source_type = "docx"
+                raw_text = read_docx_file(target)
 
-                elif ext == ".docx":
-                    source_type = "docx"
-                    raw_text = read_docx_file(target)
+            # If we reached here without exception -> ok
+            parse_status = "ok"
+            parse_error = None
+            processed_path = _write_processed_text(up.id, target.name, raw_text)
 
-                # If we reached here without exception -> ok
-                parse_status = "ok"
-                parse_error = None
-                processed_path = _write_processed_text(up.id, target.name, raw_text)
-
-            except Exception as e:
-                parse_status = "failed"
-                parse_error = f"{type(e).__name__}: {e}"
-                processed_path = None
-                raw_text = ""  # ✅ do NOT mix errors into text
-
-        # Any other extension: unsupported
-        else:
-            source_type = "unsupported"
-            parse_status, parse_error = _fail_doc_fields(ext)
-            raw_text = ""
+        except Exception as e:
+            parse_status = "failed"
+            parse_error = f"{type(e).__name__}: {e}"
             processed_path = None
+            raw_text = ""  # ✅ do NOT mix errors into text
 
         doc = Document(
             upload_id=up.id,

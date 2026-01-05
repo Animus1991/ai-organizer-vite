@@ -3,6 +3,7 @@ export type FolderDTO = {
   id: string;
   name: string;
   createdAt: number;
+  contents: string[]; // Array of duplicated chunk IDs
 };
 
 function keyFolders(docId: number) {
@@ -21,7 +22,21 @@ export function loadFolders(docId: number): FolderDTO[] {
   try {
     const raw = localStorage.getItem(keyFolders(docId));
     const arr = raw ? JSON.parse(raw) : [];
-    return Array.isArray(arr) ? (arr as FolderDTO[]) : [];
+    
+    // Migration: add contents property to folders that don't have it
+    const migrated = arr.map((folder: any) => {
+      if (!folder.contents) {
+        return { ...folder, contents: [] };
+      }
+      return folder;
+    });
+    
+    // Save migrated data back to localStorage
+    if (JSON.stringify(arr) !== JSON.stringify(migrated)) {
+      localStorage.setItem(keyFolders(docId), JSON.stringify(migrated));
+    }
+    
+    return Array.isArray(migrated) ? (migrated as FolderDTO[]) : [];
   } catch {
     return [];
   }
@@ -33,7 +48,7 @@ export function saveFolders(docId: number, folders: FolderDTO[]) {
 
 export function createFolder(docId: number, name: string): FolderDTO {
   const folders = loadFolders(docId);
-  const f: FolderDTO = { id: uid(), name: name.trim(), createdAt: Date.now() };
+  const f: FolderDTO = { id: uid(), name: name.trim(), createdAt: Date.now(), contents: [] };
   const next = [f, ...folders];
   saveFolders(docId, next);
   return f;
@@ -73,12 +88,56 @@ export function saveFolderMap(docId: number, map: Record<string, string>) {
 export function setSegmentFolder(docId: number, segId: number, folderId: string | null) {
   const map = loadFolderMap(docId);
   const k = String(segId);
-  if (!folderId) delete map[k];
-  else map[k] = folderId;
-  saveFolderMap(docId, map);
+  const previousFolderId = map[k];
+  
+  if (!folderId) {
+    // Remove from folder
+    delete map[k];
+    saveFolderMap(docId, map);
+    
+    // Also remove from folder contents if it was a duplicated chunk
+    if (previousFolderId) {
+      // This would need the duplicated chunk ID, which we don't track here
+      // For now, just update the folder map
+    }
+  } else {
+    // Add to folder
+    map[k] = folderId;
+    saveFolderMap(docId, map);
+  }
 }
 
 export function getSegmentFolderId(docId: number, segId: number): string | null {
   const map = loadFolderMap(docId);
   return map[String(segId)] ?? null;
+}
+
+// Add a duplicated chunk to a folder
+export function addChunkToFolder(docId: number, folderId: string, chunkId: string) {
+  const folders = loadFolders(docId);
+  const updatedFolders = folders.map(folder => {
+    if (folder.id === folderId) {
+      return {
+        ...folder,
+        contents: [...folder.contents, chunkId]
+      };
+    }
+    return folder;
+  });
+  saveFolders(docId, updatedFolders);
+}
+
+// Remove a duplicated chunk from a folder
+export function removeChunkFromFolder(docId: number, folderId: string, chunkId: string) {
+  const folders = loadFolders(docId);
+  const updatedFolders = folders.map(folder => {
+    if (folder.id === folderId) {
+      return {
+        ...folder,
+        contents: folder.contents.filter(id => id !== chunkId)
+      };
+    }
+    return folder;
+  });
+  saveFolders(docId, updatedFolders);
 }

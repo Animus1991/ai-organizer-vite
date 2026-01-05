@@ -19,11 +19,27 @@ import { RichTextEditor } from "../editor/RichTextEditor";
 import { plainTextToHtml } from "../editor/utils/text";
 import SegmentationSummaryBar from "../components/SegmentationSummaryBar";
 import FolderManagerDrawer from "../components/FolderManagerDrawer";
-import { loadFolders, loadFolderMap, setSegmentFolder, FolderDTO } from "../lib/segmentFolders";
+import FolderDropZone from "../components/FolderDropZone";
+import { loadFolders, loadFolderMap, setSegmentFolder, FolderDTO, addChunkToFolder } from "../lib/segmentFolders";
+import { duplicateSegment, loadDuplicatedChunks } from "../lib/chunkDuplication";
+import RecycleBinDrawer from "../components/RecycleBinDrawer";
+import FolderView from "../components/FolderView";
 import OutlineWizard from "../components/OutlineWizard";
 
 type SourceFilter = "all" | "auto" | "manual";
 type SelInfo = { start: number; end: number; text: string };
+
+// Smart Notes Types
+interface SmartNote {
+  id: string;
+  content: string;
+  html: string;
+  tags: string[];
+  category: string;
+  timestamp: string;
+  chunkId?: number;
+  priority: 'low' | 'medium' | 'high';
+}
 
 function fmt(dt?: string | null) {
   if (!dt) return "—";
@@ -34,6 +50,68 @@ function fmt(dt?: string | null) {
 function preview120(s: string) {
   const oneLine = (s ?? "").replace(/\s+/g, " ").trim();
   return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
+}
+
+// Smart Notes Functions
+function generateTags(text: string): string[] {
+  const words = text.toLowerCase().split(/\s+/);
+  const commonWords = ['the', 'is', 'at', 'which', 'on', 'a', 'an', 'and', 'or', 'but', 'in', 'with', 'to', 'for', 'of', 'as', 'by'];
+  const keywords = words.filter(word => word.length > 3 && !commonWords.includes(word));
+  return [...new Set(keywords)].slice(0, 5);
+}
+
+function categorizeNote(text: string): string {
+  const technical = ['algorithm', 'data', 'system', 'process', 'function', 'method', 'analysis', 'research'];
+  const research = ['study', 'investigation', 'findings', 'results', 'conclusion', 'hypothesis'];
+  const ideas = ['concept', 'idea', 'approach', 'solution', 'improvement', 'suggestion'];
+  
+  const lowerText = text.toLowerCase();
+  
+  if (technical.some(word => lowerText.includes(word))) return 'Technical';
+  if (research.some(word => lowerText.includes(word))) return 'Research';
+  if (ideas.some(word => lowerText.includes(word))) return 'Ideas';
+  
+  return 'General';
+}
+
+function saveSmartNote(note: Omit<SmartNote, 'id' | 'timestamp'>, docId: number): SmartNote {
+  const smartNote: SmartNote = {
+    ...note,
+    id: `note_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    timestamp: new Date().toISOString(),
+    tags: note.tags.length > 0 ? note.tags : generateTags(note.content),
+    category: note.category || categorizeNote(note.content)
+  };
+  
+  const existingNotes = JSON.parse(localStorage.getItem(`smart_notes_${docId}`) || '[]');
+  existingNotes.push(smartNote);
+  localStorage.setItem(`smart_notes_${docId}`, JSON.stringify(existingNotes));
+  
+  return smartNote;
+}
+
+function loadSmartNotes(docId: number): SmartNote[] {
+  return JSON.parse(localStorage.getItem(`smart_notes_${docId}`) || '[]');
+}
+
+function searchSmartNotes(notes: SmartNote[], query: string): SmartNote[] {
+  if (!query) return notes;
+  const lowerQuery = query.toLowerCase();
+  return notes.filter(note => 
+    note.content.toLowerCase().includes(lowerQuery) ||
+    note.tags.some(tag => tag.toLowerCase().includes(lowerQuery)) ||
+    note.category.toLowerCase().includes(lowerQuery)
+  );
+}
+
+function filterSmartNotesByCategory(notes: SmartNote[], category: string): SmartNote[] {
+  if (category === 'all') return notes;
+  return notes.filter(note => note.category === category);
+}
+
+function filterSmartNotesByTag(notes: SmartNote[], tag: string): SmartNote[] {
+  if (!tag) return notes;
+  return notes.filter(note => note.tags.includes(tag));
 }
 
 function htmlToPlainText(html: string): string {
@@ -147,12 +225,29 @@ export default function DocumentWorkspace() {
   const [docEditStatus, setDocEditStatus] = useState("");
   const [docEditSaving, setDocEditSaving] = useState(false);
 
+  // chunk editing layout state
+  const [chunkEditFullscreen, setChunkEditFullscreen] = useState(false);
+  const [showChunkListInEdit, setShowChunkListInEdit] = useState(true);
+  const [showAllChunksInEdit, setShowAllChunksInEdit] = useState(false);
+
   // Notes (Word-like) stored locally per document
   const [notesOpen, setNotesOpen] = useState(false);
   const [noteHtml, setNoteHtml] = useState<string>("<p></p>");
   const [noteText, setNoteText] = useState<string>("");
   const [noteStatus, setNoteStatus] = useState<string>("");
   const [noteDirty, setNoteDirty] = useState<boolean>(false);
+
+  // Smart Notes System
+  const [smartNotes, setSmartNotes] = useState<SmartNote[]>([]);
+  const [noteCategories, setNoteCategories] = useState<string[]>(["General", "Technical", "Research", "Ideas"]);
+  const [autoTagging, setAutoTagging] = useState<boolean>(true);
+  const [notesMode, setNotesMode] = useState<'simple' | 'smart'>('simple');
+  
+  // Smart Notes Search & Filter
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [selectedTag, setSelectedTag] = useState<string>("");
+  const [showNotesList, setShowNotesList] = useState<boolean>(false);
 
   // local HTML per segment
   const segHtmlKey = (segId: number) => `aiorg_seg_html_${segId}`;
@@ -162,9 +257,71 @@ export default function DocumentWorkspace() {
   const [folderFilter, setFolderFilter] = useState<string>("all"); // all | none | <folderId>
   const [folderMap, setFolderMap] = useState<Record<string, string>>({});
 
+  // Drag and drop state
+  const [draggedSegment, setDraggedSegment] = useState<any | null>(null);
+  const [dragOverFolder, setDragOverFolder] = useState<string | null>(null);
+
+  // Deletion confirmation state
+  const [deletingSegId, setDeletingSegId] = useState<number | null>(null);
+  const [deletingManualSegId, setDeletingManualSegId] = useState<number | null>(null);
+
   const [wizardOpen, setWizardOpen] = useState(false);
 
+  // Recycle bin state
+  const [recycleBinOpen, setRecycleBinOpen] = useState(false);
+  const [duplicatedChunks, setDuplicatedChunks] = useState<any[]>([]);
+
+  // Folder navigation state
+  const [currentFolder, setCurrentFolder] = useState<FolderDTO | null>(null);
+
   const canSegment = parseStatus === "ok";
+
+  // Handle drag start
+  const handleDragStart = (e: React.DragEvent, segment: any) => {
+    setDraggedSegment(segment);
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', JSON.stringify(segment));
+  };
+
+  // Handle drag end
+  const handleDragEnd = () => {
+    setDraggedSegment(null);
+    setDragOverFolder(null);
+  };
+
+  // Handle drag over folder
+  const handleDragOverFolder = (e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverFolder(folderId);
+  };
+
+  // Handle drop on folder
+  const handleDropOnFolder = (e: React.DragEvent, folderId: string) => {
+    e.preventDefault();
+    if (draggedSegment) {
+      // Create duplicate and add to folder
+      const duplicated = duplicateSegment(draggedSegment, docId);
+      if (duplicated) {
+        setSegmentFolder(docId, draggedSegment.id, folderId);
+        addChunkToFolder(docId, folderId, duplicated.id);
+        setFolderMap(loadFolderMap(docId));
+        setDuplicatedChunks(loadDuplicatedChunks(docId));
+        setFolders(loadFolders(docId)); // Update folders state
+      }
+    }
+    setDragOverFolder(null);
+  };
+
+  // Handle drop on "No folder"
+  const handleDropOnNoFolder = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (draggedSegment) {
+      setSegmentFolder(docId, draggedSegment.id, null);
+      setFolderMap(loadFolderMap(docId));
+    }
+    setDragOverFolder(null);
+  };
 
   async function loadDocument() {
     setStatus("Loading document...");
@@ -259,9 +416,17 @@ export default function DocumentWorkspace() {
   }
 
   async function handleDeleteSingle(seg: SegmentDTO) {
-    const ok = window.confirm(`Delete chunk: "${seg.title}"?`);
-    if (!ok) return;
+    // Check if there are duplicates in folders
+    const hasDuplicates = duplicatedChunks.some(d => d.originalId === seg.id);
+    if (hasDuplicates) {
+      setStatus("Cannot delete original chunk that has duplicates in folders. Delete the duplicates first.");
+      return;
+    }
+    
+    setDeletingSegId(seg.id);
+  }
 
+  async function confirmDeleteSingle(seg: SegmentDTO) {
     setStatus("Deleting chunk...");
     try {
       await deleteSegment(seg.id);
@@ -276,6 +441,11 @@ export default function DocumentWorkspace() {
     } catch (e: any) {
       setStatus(e?.message ?? "Delete failed");
     }
+    setDeletingSegId(null);
+  }
+
+  function cancelDelete() {
+    setDeletingSegId(null);
   }
 
   function captureManualSelection() {
@@ -429,9 +599,29 @@ export default function DocumentWorkspace() {
 
   function saveNoteLocal() {
     try {
-      localStorage.setItem(`aiorg_note_html_doc_${docId}`, noteHtml);
-      setNoteDirty(false);
-      setNoteStatus("Notes saved locally ✅");
+      if (notesMode === 'smart' && noteText.trim()) {
+        // Save as Smart Note
+        const smartNote = saveSmartNote({
+          content: noteText,
+          html: noteHtml,
+          tags: autoTagging ? generateTags(noteText) : [],
+          category: categorizeNote(noteText),
+          chunkId: chunkEditSeg?.id || undefined,
+          priority: 'medium'
+        }, docId);
+        
+        // Update smart notes list
+        const updatedNotes = loadSmartNotes(docId);
+        setSmartNotes(updatedNotes);
+        
+        setNoteDirty(false);
+        setNoteStatus(`Smart Note saved ✅ (${smartNote.tags.length} tags, ${smartNote.category})`);
+      } else {
+        // Save as Simple Note (original behavior)
+        localStorage.setItem(`aiorg_note_html_doc_${docId}`, noteHtml);
+        setNoteDirty(false);
+        setNoteStatus("Notes saved locally ✅");
+      }
     } catch (e: any) {
       setNoteStatus(`Failed to save notes: ${e?.message ?? String(e)}`);
     }
@@ -468,12 +658,16 @@ export default function DocumentWorkspace() {
     loadSummary();
 
     try {
-    setFolders(loadFolders(docId));
-    setFolderMap(loadFolderMap(docId));
-  } catch {
-    setFolders([]);
-    setFolderMap({});
-  }
+      setFolders(loadFolders(docId));
+      setFolderMap(loadFolderMap(docId));
+      setDuplicatedChunks(loadDuplicatedChunks(docId));
+      setSmartNotes(loadSmartNotes(docId));
+    } catch {
+      setFolders([]);
+      setFolderMap({});
+      setDuplicatedChunks([]);
+      setSmartNotes([]);
+    }
 
     return () => {
       if (clickTimerRef.current) window.clearTimeout(clickTimerRef.current);
@@ -601,53 +795,87 @@ export default function DocumentWorkspace() {
     >
       {/* Top bar */}
       <div
+        className="bg-surface border-b border-border p-4 flex items-center gap-3 flex-shrink-0 shadow-sm"
         style={{
           padding: 14,
           borderBottom: "1px solid rgba(255,255,255,0.10)",
           display: "flex",
           alignItems: "center",
           gap: 12,
+          flexWrap: "wrap", // Allow wrapping on smaller screens
           flex: "0 0 auto",
         }}
       >
-        <b style={{ fontSize: 16 }}>Document #{docId}</b>
-        <span style={{ opacity: 0.7 }}>{filename ?? "—"}</span>
-        <div style={{ flex: 1 }} />
-        <button onClick={openDocEditor} style={{ padding: "8px 10px" }}>
-          Edit document
-        </button>
-        <button onClick={() => nav("/")} style={{ padding: "8px 10px" }}>
-          Back to Home
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
+            <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-primary">Document #{docId}</h1>
+            <p className="text-sm text-secondary">{filename ?? "—"}</p>
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 200 }} />
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <button onClick={openDocEditor} className="btn-primary px-4 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors flex items-center gap-2 whitespace-nowrap">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            Edit document
+          </button>
+          <button onClick={() => nav("/")} className="btn-secondary px-4 py-2 rounded-lg bg-gray-700 text-white hover:bg-gray-600 transition-colors flex items-center gap-2 whitespace-nowrap">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+            </svg>
+            Back to Home
+          </button>
+        </div>
       </div>
 
       {/* Ingest banner */}
-      <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
-        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-          <div>
-            <b>Ingest:</b> {badge(parseStatus)}
-            {sourceType ? <span style={{ marginLeft: 10, opacity: 0.75 }}>source: {sourceType}</span> : null}
+      <div 
+        className="bg-surface-elevated border-b border-border p-3 flex-shrink-0"
+        style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}
+      >
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-primary">Ingest:</span>
+            <span className={`status-${parseStatus === "ok" ? "ok" : parseStatus === "failed" ? "failed" : "pending"} px-2 py-1 rounded text-sm`}>
+              {badge(parseStatus)}
+            </span>
+            {sourceType && (
+              <span className="text-sm text-secondary bg-surface px-2 py-1 rounded border">
+                source: {sourceType}
+              </span>
+            )}
           </div>
           <div style={{ flex: 1 }} />
           {!canSegment ? (
-            <span style={{ color: "#ffb3b3", opacity: 0.95 }}>Segmentation disabled until parseStatus=ok.</span>
+            <span className="text-sm text-red-400 bg-red-900/20 px-3 py-1 rounded border border-red-800">
+              ⚠️ Segmentation disabled until parseStatus=ok
+            </span>
           ) : (
-            <span style={{ color: "#bfffdc", opacity: 0.95 }}>Ready for segmentation.</span>
+            <span className="text-sm text-green-400 bg-green-900/20 px-3 py-1 rounded border border-green-800">
+              ✅ Ready for segmentation
+            </span>
           )}
         </div>
         {parseStatus === "failed" && parseError ? (
-          <div style={{ marginTop: 8, color: "#ffb3b3", whiteSpace: "pre-wrap" }}>
-            <b>Parse error:</b> {parseError}
+          <div className="mt-2 p-3 bg-red-900/20 border border-red-800 rounded text-sm text-red-400">
+            <strong>Parse error:</strong> {parseError}
           </div>
         ) : null}
       </div>
 
       {/* 50/50 split area */}
-      <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
+      <div className="flex flex-1 min-h-0" style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
         {/* Left: full document */}
         <div
+          className="flex-1 min-w-0 min-h-0 border-r border-border flex flex-col"
           style={{
-            flex: "1 1 50%",
+            flex: "1 1 65%", // Give more space to document
             minWidth: 0,
             minHeight: 0,
             borderRight: "1px solid rgba(255,255,255,0.10)",
@@ -655,27 +883,28 @@ export default function DocumentWorkspace() {
             flexDirection: "column",
           }}
         >
-          <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700 }}>
+          <div className="bg-surface-elevated border-b border-border p-3 font-semibold text-primary" style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700 }}>
             Full document
             {selectedSeg ? (
-              <span style={{ marginLeft: 10, fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
+              <span className="ml-2 text-sm text-secondary" style={{ marginLeft: 10, fontWeight: 400, opacity: 0.7, fontSize: 12 }}>
                 — selected: #{(((selectedSeg as any).orderIndex ?? 0) as number) + 1} ({(selectedSeg as any).mode}){" "}
                 {(selectedSeg as any).isManual ? "• manual" : "• auto"}
               </span>
             ) : null}
           </div>
 
-          <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+          <div className="p-3 overflow-auto flex-1 min-h-0" style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
             {docText ? (
-              <pre style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>
+              <pre className="whitespace-pre-wrap m-0 leading-relaxed" style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.55 }}>
                 {highlightedDoc.before}
                 {highlightedDoc.mid ? (
                   <span
                     ref={highlightRef}
+                    className="highlight-segment"
                     style={{
-                      background: "rgba(114,255,191,0.18)",
-                      outline: "1px solid rgba(114,255,191,0.45)",
-                      borderRadius: 6,
+                      background: "rgba(99, 102, 241, 0.2)",
+                      outline: "1px solid rgba(99, 102, 241, 0.4)",
+                      borderRadius: 4,
                       padding: "1px 2px",
                     }}
                   >
@@ -685,7 +914,7 @@ export default function DocumentWorkspace() {
                 {highlightedDoc.after}
               </pre>
             ) : (
-              <div style={{ opacity: 0.7 }}>—</div>
+              <div className="text-secondary opacity-70" style={{ opacity: 0.7 }}>—</div>
             )}
           </div>
         </div>
@@ -694,7 +923,7 @@ export default function DocumentWorkspace() {
         <div
           className="ws-right"
           style={{
-            flex: "1 1 50%",
+            flex: "1 1 35%", // Remaining space for workspace
             minWidth: 0,
             minHeight: 0,
             display: "flex",
@@ -702,34 +931,44 @@ export default function DocumentWorkspace() {
           }}
         >
           {/* TOP: controls / summary / filters */}
-          <div className="ws-top" style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <b>Workspace</b>
+          <div className="bg-surface-elevated border-b border-border p-3 ws-top" style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-primary">Workspace</span>
               <div style={{ flex: 1 }} />
-              <span style={{ opacity: 0.75, fontSize: 12 }}>{status}</span>
+              <span className="text-sm text-secondary opacity-75" style={{ opacity: 0.75, fontSize: 12 }}>{status}</span>
             </div>
 
-            <div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-              <label style={{ opacity: 0.85 }}>Mode:</label>
-              <select value={mode} onChange={(e) => setMode(e.target.value as any)} style={{ padding: "8px 10px" }}>
+            <div className="mt-2 flex items-center gap-2 flex-wrap" style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <label className="text-sm text-secondary opacity-85" style={{ opacity: 0.85 }}>Mode:</label>
+              <select value={mode} onChange={(e) => setMode(e.target.value as any)} className="px-3 py-2 bg-surface border border-border rounded" style={{ padding: "8px 10px" }}>
                 <option value="qa">qa</option>
                 <option value="paragraphs">paragraphs</option>
               </select>
 
-              <button onClick={() => loadSegs()} style={{ padding: "8px 10px" }}>
+              <button onClick={() => loadSegs()} className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2" style={{ padding: "8px 10px" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
                 List segments
               </button>
 
               <button
                 onClick={runSegmentation}
                 disabled={!canSegment}
+                className={`btn-primary px-3 py-2 rounded transition-colors flex items-center gap-2 ${!canSegment ? "opacity-50 cursor-not-allowed bg-gray-600" : "bg-indigo-600 hover:bg-indigo-700 text-white"}`}
                 style={{ padding: "8px 10px", opacity: canSegment ? 1 : 0.6 }}
                 title={!canSegment ? "parseStatus must be ok." : ""}
               >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
                 Segment now
               </button>
 
-              <button onClick={deleteModeSegments} style={{ padding: "8px 10px" }}>
+              <button onClick={deleteModeSegments} className="btn-danger px-3 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2" style={{ padding: "8px 10px" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
                 Delete mode segments
               </button>
 
@@ -741,14 +980,37 @@ export default function DocumentWorkspace() {
                   setManualTitle("");
                   setManualOpenSeg(null);
                 }}
+                className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2"
                 style={{ padding: "8px 10px" }}
               >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
                 Manual chunk
               </button>
 
-              <button onClick={() => setNotesOpen((v) => !v)} style={{ padding: "8px 10px" }}>
-                {notesOpen ? "Hide Word editor" : "Word editor"}
-              </button>
+              <div className="flex items-center gap-2">
+                <select 
+                  value={notesMode} 
+                  onChange={(e) => setNotesMode(e.target.value as any)} 
+                  className="px-2 py-1 bg-surface border border-border rounded text-xs"
+                  style={{ padding: "4px 6px", fontSize: "11px" }}
+                >
+                  <option value="simple">Simple</option>
+                  <option value="smart">Smart Notes</option>
+                </select>
+                <button 
+                  onClick={() => setNotesOpen((v) => !v)} 
+                  className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2" 
+                  style={{ padding: "8px 10px" }}
+                  title={notesMode === 'smart' ? 'Smart Notes with auto-categorization and tagging' : 'Simple notes editor'}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  {notesOpen ? `Hide ${notesMode === 'smart' ? 'Smart Notes' : 'Word editor'}` : `${notesMode === 'smart' ? 'Smart Notes' : 'Word editor'}`}
+                </button>
+              </div>
             </div>
 
             {/* Compact one-liner summary */}
@@ -768,10 +1030,11 @@ export default function DocumentWorkspace() {
 
 
             {/* Search + Source filter */}
-            <div className="ws-filters" style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center" }}>
+            <div className="mt-2 flex items-center gap-2 flex-wrap" style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <select
                 value={sourceFilter}
                 onChange={(e) => setSourceFilter(e.target.value as SourceFilter)}
+                className="px-3 py-2 bg-surface border border-border rounded"
                 style={{ padding: "8px 10px" }}
               >
                 <option value="all">All chunks</option>
@@ -781,6 +1044,7 @@ export default function DocumentWorkspace() {
               <select
                 value={folderFilter}
                 onChange={(e) => setFolderFilter(e.target.value)}
+                className="px-3 py-2 bg-surface border border-border rounded"
                 style={{ padding: "8px 10px" }}
               >
                 <option value="all">All folders</option>
@@ -792,11 +1056,17 @@ export default function DocumentWorkspace() {
                 ))}
               </select>
 
-              <button onClick={() => setFoldersOpen(true)} style={{ padding: "8px 10px" }}>
+              <button onClick={() => setFoldersOpen(true)} className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2" style={{ padding: "8px 10px" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
                 Folders
               </button>
 
-              <button onClick={() => setWizardOpen(true)} style={{ padding: "8px 10px" }}>
+              <button onClick={() => setWizardOpen(true)} className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2" style={{ padding: "8px 10px" }}>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                </svg>
                 Outline Wizard
               </button>
 
@@ -804,6 +1074,7 @@ export default function DocumentWorkspace() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search chunks..."
+                className="flex-1 min-w-0 px-3 py-2 bg-surface border border-border rounded"
                 style={{
                   flex: 1,
                   minWidth: 0,
@@ -814,11 +1085,37 @@ export default function DocumentWorkspace() {
                   color: "#eaeaea",
                 }}
               />
-              <button onClick={() => setQuery("")} disabled={!query} style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}>
+              <button onClick={() => setQuery("")} disabled={!query} className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors" style={{ padding: "8px 10px", opacity: query ? 1 : 0.6 }}>
                 Clear
               </button>
             </div>
           </div>
+
+          {/* Folder Drop Zones */}
+          {draggedSegment && (
+            <div className="mt-4 p-4 bg-surface-elevated border border-border rounded-lg">
+              <h3 className="text-sm font-semibold text-primary mb-3">Move "{draggedSegment.title || 'Segment'}" to folder:</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <FolderDropZone
+                  folder={null}
+                  onDrop={(folderId) => handleDropOnNoFolder({ preventDefault: () => {} } as React.DragEvent)}
+                  onDragOver={(folderId) => setDragOverFolder(folderId)}
+                  isDragOver={dragOverFolder === null}
+                  draggedSegment={draggedSegment}
+                />
+                {folders.map((folder) => (
+                  <FolderDropZone
+                    key={folder.id}
+                    folder={folder}
+                    onDrop={(folderId) => handleDropOnFolder({ preventDefault: () => {} } as React.DragEvent, folderId!)}
+                    onDragOver={(folderId) => setDragOverFolder(folderId)}
+                    isDragOver={dragOverFolder === folder.id}
+                    draggedSegment={draggedSegment}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* BODY: notes area + chunks list/view */}
           <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
@@ -827,102 +1124,220 @@ export default function DocumentWorkspace() {
               <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex" }}>
                 {!openSeg ? (
                   <div ref={listScrollRef} style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto" }}>
-                    <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
-                      <span>Chunks</span>
-                      <span style={{ opacity: 0.7, fontWeight: 400 }}>
-                        {segments.length ? `${filteredSegments.length}/${segments.length}` : "—"}
-                      </span>
-                    </div>
-
-                    {!segments.length ? (
-                      <div style={{ padding: 12, opacity: 0.7 }}>No chunks loaded. Click “List segments”.</div>
-                    ) : !filteredSegments.length ? (
-                      <div style={{ padding: 12, opacity: 0.7 }}>No results.</div>
+                    {folderFilter !== "all" && folderFilter !== "none" && folders.find(f => f.id === folderFilter) ? (
+                      // Show folder view when a specific folder is selected
+                      <FolderView
+                        docId={docId}
+                        folder={folders.find(f => f.id === folderFilter)!}
+                        onBack={() => setFolderFilter("all")}
+                        onChunkUpdated={() => {
+                          setDuplicatedChunks(loadDuplicatedChunks(docId));
+                          setFolders(loadFolders(docId));
+                        }}
+                      />
                     ) : (
-                      <div style={{ padding: 8, display: "grid", gap: 8 }}>
-                        {filteredSegments.map((s: any) => {
-                          const active = selectedSegId === s.id;
-                          return (
-                            <div
-                              key={s.id}
-                              onClick={() => handleSelect(s)}
-                              onDoubleClick={() => handleOpen(s)}
-                              title="Click to select & highlight. Double-click to open."
-                              style={{
-                                cursor: "pointer",
-                                padding: 10,
-                                borderRadius: 10,
-                                border: "1px solid rgba(255,255,255,0.10)",
-                                background: active ? "rgba(114,255,191,0.10)" : "rgba(255,255,255,0.03)",
-                                userSelect: "none",
-                              }}
-                            >
-                              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                                <b style={{ fontSize: 13 }}>
-                                  {(s.orderIndex ?? 0) + 1}. {s.title}
-                                  <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{s.isManual ? "manual" : "auto"}</span>
-                                  {folderMap[String(s.id)] ? (
-                                    <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7, color: "#72ffbf" }}>
-                                      📁 {folders.find((f) => f.id === folderMap[String(s.id)])?.name ?? "?"}
-                                    </span>
-                                  ) : null}
-                                </b>
+                      // Show regular segments list
+                      <>
+                        <div style={{ padding: 12, fontWeight: 700, display: "flex", justifyContent: "space-between" }}>
+                          <span>Chunks</span>
+                          <span style={{ opacity: 0.7, fontWeight: 400 }}>
+                            {segments.length ? `${filteredSegments.length}/${segments.length}` : "—"}
+                          </span>
+                        </div>
 
-                                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                  <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
+                        {!segments.length ? (
+                          <div style={{ padding: 12, opacity: 0.7 }}>No chunks loaded. Click "List segments".</div>
+                        ) : !filteredSegments.length ? (
+                          <div style={{ padding: 12, opacity: 0.7 }}>No results.</div>
+                        ) : (
+                          <div style={{ padding: 8, display: "grid", gap: 8 }}>
+                            {filteredSegments.map((s: any) => {
+                              const active = selectedSegId === s.id;
+                              return (
+                                <div
+                                  key={s.id}
+                                  onClick={() => handleSelect(s)}
+                                  onDoubleClick={() => handleOpen(s)}
+                                  title="Click to select & highlight. Double-click to open. Drag to move to folder."
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, s)}
+                                  onDragEnd={handleDragEnd}
+                                  className={`cursor-move transition-all duration-200 ${
+                                    draggedSegment?.id === s.id ? 'opacity-50' : ''
+                                  } ${dragOverFolder ? 'ring-2 ring-primary/50' : ''}`}
+                                  style={{
+                                    cursor: "pointer",
+                                    padding: 10,
+                                    borderRadius: 10,
+                                    border: "1px solid rgba(255,255,255,0.10)",
+                                    background: active ? "rgba(114,255,191,0.10)" : "rgba(255,255,255,0.03)",
+                                    userSelect: "none",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+                                    <b style={{ fontSize: 13 }}>
+                                      {(s.orderIndex ?? 0) + 1}. {s.title}
+                                      <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7 }}>{s.isManual ? "manual" : "auto"}</span>
+                                      {folderMap[String(s.id)] ? (
+                                        <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.7, color: "#72ffbf" }}>
+                                          📁 {folders.find((f) => f.id === folderMap[String(s.id)])?.name ?? "?"}
+                                        </span>
+                                      ) : null}
+                                    </b>
 
-                                  <select
-                                    value={folderMap[String(s.id)] ?? "none"}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
-                                      const folderId = e.target.value === "none" ? null : e.target.value;
-                                      setSegmentFolder(docId, s.id, folderId);
-                                      setFolderMap(loadFolderMap(docId));
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    style={{
-                                      padding: "4px 8px",
-                                      borderRadius: 6,
-                                      border: "1px solid rgba(255,255,255,0.12)",
-                                      background: "#0f1420",
-                                      color: "#eaeaea",
-                                      fontSize: 11,
-                                    }}
-                                  >
-                                    <option value="none">No folder</option>
-                                    {folders.map((f) => (
-                                      <option key={f.id} value={f.id}>
-                                        {f.name}
-                                      </option>
-                                    ))}
-                                  </select>
+                                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                      <span style={{ fontSize: 12, opacity: 0.7 }}>{s.mode}</span>
 
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      openChunkEditor(s);
-                                    }}
-                                    style={{ padding: "4px 10px" }}
-                                  >
-                                    Edit
-                                  </button>
+                                      <select
+                                        value={folderMap[String(s.id)] ?? "none"}
+                                        onChange={(e) => {
+                                          e.stopPropagation();
+                                          const folderId = e.target.value === "none" ? null : e.target.value;
 
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteSingle(s);
-                                    }}
-                                    style={{ padding: "4px 10px" }}
-                                  >
-                                    Delete
-                                  </button>
+                                          if (folderId) {
+                                            // Create duplicate and add to folder
+                                            const duplicated = duplicateSegment(s, docId);
+                                            if (duplicated) {
+                                              setSegmentFolder(docId, s.id, folderId);
+                                              addChunkToFolder(docId, folderId, duplicated.id);
+                                              setFolderMap(loadFolderMap(docId));
+                                              setDuplicatedChunks(loadDuplicatedChunks(docId) as any);
+                                              setFolders(loadFolders(docId)); // Update folders state
+                                            }
+                                          } else {
+                                            setSegmentFolder(docId, s.id, null);
+                                            setFolderMap(loadFolderMap(docId));
+                                          }
+                                        }}
+                                        onClick={(e) => e.stopPropagation()}
+                                        style={{
+                                          padding: "4px 8px",
+                                          borderRadius: 6,
+                                          border: "1px solid rgba(255,255,255,0.12)",
+                                          background: "#0f1420",
+                                          color: "#eaeaea",
+                                          fontSize: 11,
+                                        }}
+                                      >
+                                        <option value="none">No folder</option>
+                                        {folders.map((f) => (
+                                          <option key={f.id} value={f.id}>
+                                            {f.name}
+                                          </option>
+                                        ))}
+                                      </select>
+
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openChunkEditor(s);
+                                        }}
+                                        style={{ padding: "4px 10px" }}
+                                      >
+                                        Edit
+                                      </button>
+
+                                      {deletingSegId === s.id ? (
+                                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                          <span style={{ fontSize: 11, opacity: 0.7 }}>Delete?</span>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              confirmDeleteSingle(s);
+                                            }}
+                                            style={{
+                                              padding: "3px 8px",
+                                              fontSize: 11,
+                                              background: "rgba(239, 68, 68, 0.2)",
+                                              border: "1px solid rgba(239, 68, 68, 0.4)",
+                                              color: "#ef4444",
+                                              borderRadius: 4,
+                                              cursor: "pointer",
+                                              transition: "all 0.2s",
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              e.currentTarget.style.background = "rgba(239, 68, 68, 0.3)";
+                                              e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.6)";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
+                                              e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
+                                            }}
+                                          >
+                                            ✓
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              cancelDelete();
+                                            }}
+                                            style={{
+                                              padding: "3px 8px",
+                                              fontSize: 11,
+                                              background: "rgba(255, 255, 255, 0.1)",
+                                              border: "1px solid rgba(255, 255, 255, 0.2)",
+                                              color: "#eaeaea",
+                                              borderRadius: 4,
+                                              cursor: "pointer",
+                                              transition: "all 0.2s",
+                                            }}
+                                            onMouseEnter={(e) => {
+                                              e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)";
+                                              e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.3)";
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
+                                              e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.2)";
+                                            }}
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteSingle(s);
+                                          }}
+                                          style={{
+                                            padding: "4px 10px",
+                                            fontSize: 11,
+                                            background: "rgba(239, 68, 68, 0.1)",
+                                            border: "1px solid rgba(239, 68, 68, 0.2)",
+                                            color: "#ef4444",
+                                            borderRadius: 6,
+                                            cursor: "pointer",
+                                            transition: "all 0.2s",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 4,
+                                          }}
+                                          onMouseEnter={(e) => {
+                                            e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
+                                            e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.3)";
+                                            e.currentTarget.style.transform = "scale(1.05)";
+                                          }}
+                                          onMouseLeave={(e) => {
+                                            e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
+                                            e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.2)";
+                                            e.currentTarget.style.transform = "scale(1)";
+                                          }}
+                                          title="Delete chunk"
+                                        >
+                                          🗑️ Delete
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+                                    {preview120(s.content)}
+                                  </div>
                                 </div>
-                              </div>
-                              <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
                 ) : (
@@ -942,7 +1357,7 @@ export default function DocumentWorkspace() {
                         <span style={{ fontSize: 12, opacity: 0.7 }}>{(openSeg as any).isManual ? "• manual" : "• auto"}</span>
                       </b>
 
-                      <button onClick={() => openChunkEditor(openSeg)} style={{ padding: "8px 10px" }}>
+                      <button onClick={() => openSeg && openChunkEditor(openSeg)} style={{ padding: "8px 10px" }}>
                         Edit
                       </button>
 
@@ -968,48 +1383,186 @@ export default function DocumentWorkspace() {
               </div>
             </div>
 
-            {/* Right within workspace: notes editor (fills remaining height) */}
+            {/* Notes Editor Modal */}
+      {notesOpen ? (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", display: "flex", padding: 18, zIndex: 70 }}>
+          <div
+            style={{
+              flex: 1,
+              background: "#0b0e14",
+              border: "1px solid rgba(255,255,255,0.12)",
+              borderRadius: 14,
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              maxWidth: "1200px",
+              margin: "0 auto"
+            }}
+          >
+            {/* Header */}
             <div
-              className="ws-editor"
               style={{
-                width: notesOpen ? "50%" : 0,
-                transition: "width 180ms ease",
-                borderLeft: notesOpen ? "1px solid rgba(255,255,255,0.10)" : "none",
-                overflow: "hidden",
-                minHeight: 0,
-                flex: notesOpen ? "1 1 50%" : "0 0 auto",
+                padding: 20,
+                borderBottom: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.03)",
+                flex: "0 0 auto"
               }}
             >
-              {notesOpen ? (
-                <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
-                  <div
-                    style={{
-                      padding: 12,
-                      borderBottom: "1px solid rgba(255,255,255,0.08)",
-                      background: "rgba(255,255,255,0.02)",
-                      flex: "0 0 auto",
-                    }}
-                  >
-                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <b>Word editor (Notes)</b>
-                      <span style={{ fontSize: 12, opacity: 0.75 }}>
-                        {noteStatus}
-                        {noteDirty ? " • unsaved" : ""}
-                      </span>
-                      <div style={{ flex: 1 }} />
-                      <button onClick={saveNoteLocal} style={{ padding: "8px 10px" }}>
-                        Save notes
-                      </button>
-                      <button onClick={resetNoteFromDocument} style={{ padding: "8px 10px" }}>
-                        Copy from document
-                      </button>
-                      <button onClick={applyNoteToDocumentText} style={{ padding: "8px 10px" }}>
-                        Apply to document text
-                      </button>
-                    </div>
-                  </div>
+              <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 16 }}>
+                <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>
+                  {notesMode === 'smart' ? '🧠 Smart Notes Editor' : '📝 Notes Editor'}
+                </h2>
+                <div style={{ flex: 1 }} />
+                <button
+                  onClick={() => setNotesOpen(false)}
+                  style={{
+                    padding: "8px 12px",
+                    background: "rgba(255,255,255,0.1)",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    cursor: "pointer"
+                  }}
+                >
+                  ✕ Close
+                </button>
+              </div>
 
-                  <div style={{ flex: "1 1 auto", minHeight: 0, padding: 12 }}>
+              {/* Mode Selector */}
+              <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+                <span style={{ fontSize: 14, opacity: 0.9 }}>Mode:</span>
+                <select 
+                  value={notesMode} 
+                  onChange={(e) => setNotesMode(e.target.value as any)} 
+                  style={{
+                    padding: "8px 12px",
+                    background: "rgba(255,255,255,0.1)",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    color: "white",
+                    minWidth: "200px"
+                  }}
+                >
+                  <option value="simple">📝 Simple Notes - Basic text editing</option>
+                  <option value="smart">🧠 Smart Notes - Auto-tagging & categorization</option>
+                </select>
+                
+                {notesMode === 'smart' && (
+                  <span style={{ fontSize: 13, opacity: 0.7, marginLeft: 12 }}>
+                    ✨ Auto-tagging & categorization enabled
+                  </span>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <button 
+                  onClick={saveNoteLocal} 
+                  style={{
+                    padding: "10px 16px",
+                    background: noteDirty ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.1)",
+                    border: noteDirty ? "1px solid rgba(34,197,94,0.5)" : "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    cursor: "pointer",
+                    fontWeight: 500
+                  }}
+                >
+                  💾 {noteDirty ? 'Save Changes' : 'Saved'}
+                </button>
+                
+                <button 
+                  onClick={resetNoteFromDocument} 
+                  style={{
+                    padding: "10px 16px",
+                    background: "rgba(255,255,255,0.1)",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    cursor: "pointer"
+                  }}
+                >
+                  📄 Copy from Document
+                </button>
+                
+                <button 
+                  onClick={applyNoteToDocumentText} 
+                  style={{
+                    padding: "10px 16px",
+                    background: "rgba(239,68,68,0.2)",
+                    border: "1px solid rgba(239,68,68,0.5)",
+                    borderRadius: 8,
+                    fontSize: 14,
+                    cursor: "pointer"
+                  }}
+                  title="⚠️ This will overwrite the entire document text!"
+                >
+                  ⚠️ Apply to Document
+                </button>
+              </div>
+
+              {/* Status */}
+              <div style={{ marginTop: 12, fontSize: 13, opacity: 0.8 }}>
+                Status: {noteStatus} {noteDirty && '• Unsaved changes'}
+              </div>
+            </div>
+
+            {/* Main Content Area */}
+            <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <div style={{ flex: "1 1 auto", minHeight: 0, display: "flex", padding: 20, gap: 20 }}>
+                
+                {/* Left: Editor */}
+                <div style={{ flex: "1 1 60%", display: "flex", flexDirection: "column" }}>
+                  {/* Smart Features */}
+                  {notesMode === 'smart' && (
+                    <div style={{ 
+                      marginBottom: 16, 
+                      padding: 16, 
+                      background: "rgba(255,255,255,0.02)", 
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,255,255,0.1)"
+                    }}>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+                        🏷️ Smart Features
+                      </div>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 13 }}>
+                        <button 
+                          onClick={() => setAutoTagging(!autoTagging)}
+                          style={{
+                            padding: "8px 12px",
+                            background: autoTagging ? "rgba(34,197,94,0.2)" : "rgba(255,255,255,0.1)",
+                            border: autoTagging ? "1px solid rgba(34,197,94,0.5)" : "1px solid rgba(255,255,255,0.2)",
+                            borderRadius: 6,
+                            fontSize: 12
+                          }}
+                        >
+                          {autoTagging ? '✓ Auto-tagging ON' : 'Auto-tagging OFF'}
+                        </button>
+                        
+                        <select 
+                          value="General" 
+                          onChange={(e) => console.log('Category:', e.target.value)}
+                          style={{
+                            padding: "8px 12px",
+                            background: "rgba(255,255,255,0.1)",
+                            border: "1px solid rgba(255,255,255,0.2)",
+                            borderRadius: 6,
+                            fontSize: 12
+                          }}
+                        >
+                          <option value="General">📁 General</option>
+                          <option value="Technical">🔧 Technical</option>
+                          <option value="Research">🔬 Research</option>
+                          <option value="Ideas">💡 Ideas</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Rich Text Editor */}
+                  <div style={{ flex: 1, minHeight: 300 }}>
                     <RichTextEditor
                       valueHtml={noteHtml}
                       onChange={({ html, text }) => {
@@ -1017,15 +1570,170 @@ export default function DocumentWorkspace() {
                         setNoteText(text);
                         setNoteDirty(true);
                       }}
-                      placeholder="Write notes here…"
+                      placeholder={notesMode === 'smart' 
+                        ? '🧠 Write your smart notes here... Tags and categories will be added automatically!' 
+                        : '📝 Write your notes here...'
+                      }
                     />
-                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-                      Notes are stored locally (browser). “Apply to document text” overwrites document text (segments may need re-run).
-                    </div>
                   </div>
                 </div>
-              ) : null}
+
+                {/* Right: Smart Notes List */}
+                {notesMode === 'smart' && (
+                  <div style={{ flex: "1 1 40%", display: "flex", flexDirection: "column" }}>
+                    <div style={{ 
+                      padding: 16, 
+                      background: "rgba(255,255,255,0.02)", 
+                      borderRadius: 12,
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      height: "100%",
+                      display: "flex",
+                      flexDirection: "column"
+                    }}>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+                        📚 Smart Notes ({smartNotes.length})
+                      </div>
+
+                      {/* Search Bar */}
+                      <div style={{ marginBottom: 12 }}>
+                        <input
+                          type="text"
+                          placeholder="🔍 Search notes..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          style={{
+                            width: "100%",
+                            padding: "10px",
+                            background: "rgba(255,255,255,0.1)",
+                            border: "1px solid rgba(255,255,255,0.2)",
+                            borderRadius: 8,
+                            fontSize: 14,
+                            color: "white"
+                          }}
+                        />
+                      </div>
+
+                      {/* Filters */}
+                      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                        <select
+                          value={selectedCategory}
+                          onChange={(e) => setSelectedCategory(e.target.value)}
+                          style={{
+                            padding: "6px 10px",
+                            background: "rgba(255,255,255,0.1)",
+                            border: "1px solid rgba(255,255,255,0.2)",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            color: "white"
+                          }}
+                        >
+                          <option value="all">📁 All Categories</option>
+                          <option value="General">📁 General</option>
+                          <option value="Technical">🔧 Technical</option>
+                          <option value="Research">🔬 Research</option>
+                          <option value="Ideas">💡 Ideas</option>
+                        </select>
+
+                        <select
+                          value={selectedTag}
+                          onChange={(e) => setSelectedTag(e.target.value)}
+                          style={{
+                            padding: "6px 10px",
+                            background: "rgba(255,255,255,0.1)",
+                            border: "1px solid rgba(255,255,255,0.2)",
+                            borderRadius: 6,
+                            fontSize: 12,
+                            color: "white"
+                          }}
+                        >
+                          <option value="">🏷️ All Tags</option>
+                          {[...new Set(smartNotes.flatMap(note => note.tags))].map(tag => (
+                            <option key={tag} value={tag}>🏷️ {tag}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Notes List */}
+                      <div style={{ flex: 1, overflowY: "auto" }}>
+                        {(() => {
+                          let filteredNotes = smartNotes;
+                          if (searchQuery) filteredNotes = searchSmartNotes(filteredNotes, searchQuery);
+                          if (selectedCategory !== 'all') filteredNotes = filterSmartNotesByCategory(filteredNotes, selectedCategory);
+                          if (selectedTag) filteredNotes = filterSmartNotesByTag(filteredNotes, selectedTag);
+
+                          return filteredNotes.length > 0 ? (
+                            filteredNotes.map(note => (
+                              <div
+                                key={note.id}
+                                style={{
+                                  padding: 12,
+                                  marginBottom: 8,
+                                  background: "rgba(255,255,255,0.05)",
+                                  border: "1px solid rgba(255,255,255,0.1)",
+                                  borderRadius: 8,
+                                  fontSize: 12,
+                                  cursor: "pointer"
+                                }}
+                                onClick={() => {
+                                  setNoteHtml(note.html);
+                                  setNoteText(note.content);
+                                  setNoteDirty(false);
+                                }}
+                              >
+                                <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                                  {note.content.slice(0, 80)}...
+                                </div>
+                                <div style={{ opacity: 0.7, fontSize: 11 }}>
+                                  📁 {note.category} • 🏷️ {note.tags.join(', ')} • {new Date(note.timestamp).toLocaleDateString()}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div style={{ textAlign: "center", opacity: 0.5, fontSize: 13, padding: 20 }}>
+                              No notes found. Start writing to create your first smart note!
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Help Section */}
+              <div style={{ 
+                padding: 20, 
+                borderTop: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.02)",
+                flex: "0 0 auto"
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+                  💡 {notesMode === 'smart' ? 'Smart Notes Help' : 'Notes Help'}
+                </div>
+                {notesMode === 'smart' ? (
+                  <div style={{ fontSize: 13, lineHeight: 1.5, opacity: 0.9 }}>
+                    <strong>🧠 Smart Notes Features:</strong><br/>
+                    • <strong>Auto-tagging:</strong> Automatically extracts relevant keywords from your notes<br/>
+                    • <strong>Auto-categorization:</strong> Organizes notes by topic (Technical, Research, Ideas, General)<br/>
+                    • <strong>Smart Search:</strong> Search by content, tags, or categories<br/>
+                    • <strong>Click to Edit:</strong> Click any note in the list to load it for editing<br/>
+                    • <strong>Context-Aware:</strong> Notes are linked to current chunk for better organization
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 13, lineHeight: 1.5, opacity: 0.9 }}>
+                    <strong>📝 Simple Notes Features:</strong><br/>
+                    • <strong>Rich Text Editing:</strong> Full formatting support with toolbar<br/>
+                    • <strong>Local Storage:</strong> Notes are saved in your browser<br/>
+                    • <strong>Copy from Document:</strong> Quickly copy the entire document text<br/>
+                    • <strong>Apply to Document:</strong> Replace document content with your notes (⚠️ use carefully)<br/>
+                    • <strong>Auto-save:</strong> Changes are saved when you click the Save button
+                  </div>
+                )}
+              </div>
             </div>
+          </div>
+        </div>
+      ) : null}
           </div>
         </div>
       </div>
@@ -1063,9 +1771,10 @@ export default function DocumentWorkspace() {
             </div>
 
             <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
+              {/* Left: document text for selection */}
               <div
                 style={{
-                  flex: "1 1 50%",
+                  flex: "1 1 60%", // Give more space to document text
                   minWidth: 0,
                   minHeight: 0,
                   borderRight: "1px solid rgba(255,255,255,0.10)",
@@ -1089,7 +1798,8 @@ export default function DocumentWorkspace() {
                 </div>
               </div>
 
-              <div style={{ flex: "1 1 50%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              {/* Right: fields + editor */}
+              <div style={{ flex: "1 1 40%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
                 <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                     <input
@@ -1160,7 +1870,13 @@ export default function DocumentWorkspace() {
                               key={s.id}
                               onClick={() => manualHandleSelect(s)}
                               onDoubleClick={() => manualHandleOpen(s)}
-                              title="Click to select & highlight. Double-click to open."
+                              title="Click to select & highlight. Double-click to open. Drag to move to folder."
+                              draggable
+                              onDragStart={(e) => handleDragStart(e, s)}
+                              onDragEnd={handleDragEnd}
+                              className={`cursor-move transition-all duration-200 ${
+                                draggedSegment?.id === s.id ? 'opacity-50' : ''
+                              }`}
                               style={{
                                 cursor: "pointer",
                                 padding: 10,
@@ -1217,15 +1933,96 @@ export default function DocumentWorkspace() {
                                     Edit
                                   </button>
 
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteSingle(s);
-                                    }}
-                                    style={{ padding: "4px 10px" }}
-                                  >
-                                    Delete
-                                  </button>
+                                  {deletingSegId === s.id ? (
+                                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                      <span style={{ fontSize: 11, opacity: 0.7 }}>Delete?</span>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          confirmDeleteSingle(s);
+                                        }}
+                                        style={{
+                                          padding: "3px 8px",
+                                          fontSize: 11,
+                                          background: "rgba(239, 68, 68, 0.2)",
+                                          border: "1px solid rgba(239, 68, 68, 0.4)",
+                                          color: "#ef4444",
+                                          borderRadius: 4,
+                                          cursor: "pointer",
+                                          transition: "all 0.2s",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          e.currentTarget.style.background = "rgba(239, 68, 68, 0.3)";
+                                          e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.6)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
+                                          e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
+                                        }}
+                                      >
+                                        ✓
+                                      </button>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          cancelDelete();
+                                        }}
+                                        style={{
+                                          padding: "3px 8px",
+                                          fontSize: 11,
+                                          background: "rgba(255, 255, 255, 0.1)",
+                                          border: "1px solid rgba(255, 255, 255, 0.2)",
+                                          color: "#eaeaea",
+                                          borderRadius: 4,
+                                          cursor: "pointer",
+                                          transition: "all 0.2s",
+                                        }}
+                                        onMouseEnter={(e) => {
+                                          e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)";
+                                          e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.3)";
+                                        }}
+                                        onMouseLeave={(e) => {
+                                          e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
+                                          e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.2)";
+                                        }}
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteSingle(s);
+                                      }}
+                                      style={{
+                                        padding: "4px 10px",
+                                        fontSize: 11,
+                                        background: "rgba(239, 68, 68, 0.1)",
+                                        border: "1px solid rgba(239, 68, 68, 0.2)",
+                                        color: "#ef4444",
+                                        borderRadius: 6,
+                                        cursor: "pointer",
+                                        transition: "all 0.2s",
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 4,
+                                      }}
+                                      onMouseEnter={(e) => {
+                                        e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
+                                        e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.3)";
+                                        e.currentTarget.style.transform = "scale(1.05)";
+                                      }}
+                                      onMouseLeave={(e) => {
+                                        e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
+                                        e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.2)";
+                                        e.currentTarget.style.transform = "scale(1)";
+                                      }}
+                                      title="Delete chunk"
+                                    >
+                                      🗑️ Delete
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                               <div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>{preview120(s.content)}</div>
@@ -1248,7 +2045,7 @@ export default function DocumentWorkspace() {
                       >
                         <b style={{ flex: 1 }}>{(manualOpenSeg as any).title}</b>
 
-                        <button onClick={() => openChunkEditor(manualOpenSeg)} style={{ padding: "8px 10px" }}>
+                        <button onClick={() => manualOpenSeg && openChunkEditor(manualOpenSeg)} style={{ padding: "8px 10px" }}>
                           Edit
                         </button>
 
@@ -1293,8 +2090,12 @@ export default function DocumentWorkspace() {
               display: "flex",
               flexDirection: "column",
               minHeight: 0,
+              maxWidth: chunkEditFullscreen ? "100%" : "1400px",
+              margin: chunkEditFullscreen ? "0" : "0 auto",
+              width: chunkEditFullscreen ? "100%" : "auto",
             }}
           >
+            {/* Header */}
             <div
               style={{
                 padding: 12,
@@ -1305,20 +2106,66 @@ export default function DocumentWorkspace() {
                 flex: "0 0 auto",
               }}
             >
-              <b style={{ flex: 1 }}>Edit chunk</b>
-              <span style={{ fontSize: 12, opacity: 0.7 }}>
-                id={(chunkEditSeg as any).id} • mode={(chunkEditSeg as any).mode} • {(chunkEditSeg as any).isManual ? "manual" : "auto"}
-              </span>
+              <b style={{ flex: 1 }}>Edit Chunk: {chunkEditSeg.title}</b>
+              <span style={{ fontSize: 12, opacity: 0.7 }}>{chunkEditStatus}</span>
+              <button
+                onClick={() => setChunkEditFullscreen(!chunkEditFullscreen)}
+                style={{ padding: "6px 10px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, color: "#eaeaea" }}
+                title={chunkEditFullscreen ? "Exit fullscreen" : "Fullscreen"}
+              >
+                {chunkEditFullscreen ? "🗗" : "🗖"}
+              </button>
               <button onClick={() => setChunkEditOpen(false)} style={{ padding: "8px 10px" }}>
                 Close
               </button>
             </div>
 
+            {/* Editor Toolbar - Full Width */}
+            <div style={{ flex: "0 0 auto", borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
+              <div style={{ padding: "10px 12px" }}>
+                <label style={{ display: "block", fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Title</label>
+                <input
+                  value={chunkEditTitle}
+                  onChange={(e) => setChunkEditTitle(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    borderRadius: 6,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "#0f1420",
+                    color: "#eaeaea",
+                    fontSize: 13,
+                    marginBottom: 10,
+                  }}
+                />
+                <label style={{ display: "block", fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Content</label>
+                <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, overflow: "hidden" }}>
+                  <RichTextEditor
+                    valueHtml={chunkEditHtml}
+                    onChange={({ html, text }) => {
+                      setChunkEditHtml(html);
+                      setChunkEditContent(text);
+                      setChunkEditDirty(true);
+                    }}
+                    placeholder="Edit chunk content..."
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 10, marginTop: 10, justifyContent: "flex-end" }}>
+                  <button onClick={() => setChunkEditOpen(false)} style={{ padding: "8px 16px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6 }}>
+                    Cancel
+                  </button>
+                  <button onClick={saveChunkEdit} style={{ padding: "8px 16px", background: "#72ffbf", color: "#0b0e14", border: "none", borderRadius: 6, fontWeight: 600 }}>
+                    Save Changes
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div style={{ display: "flex", flex: "1 1 auto", minHeight: 0 }}>
-              {/* Left: document reselect */}
+              {/* Left: Chunk Details + Optional List */}
               <div
                 style={{
-                  flex: "1 1 55%",
+                  flex: showChunkListInEdit ? "1 1 16.5%" : "1 1 16.5%",
                   minWidth: 0,
                   minHeight: 0,
                   borderRight: "1px solid rgba(255,255,255,0.10)",
@@ -1326,190 +2173,189 @@ export default function DocumentWorkspace() {
                   flexDirection: "column",
                 }}
               >
-                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 700, flex: "0 0 auto" }}>
-                  Reselect from document (drag). Mouse up = capture.
+                {/* Chunk Details */}
+                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
+                  <h4 style={{ margin: "0 0 10px 0", fontSize: 14, fontWeight: 600 }}>Chunk Details</h4>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
+                    <strong>Index:</strong> {(chunkEditSeg as any).orderIndex + 1} | 
+                    <strong> Type:</strong> {(chunkEditSeg as any).isManual ? "Manual" : "Auto"} | 
+                    <strong> Mode:</strong> {(chunkEditSeg as any).mode}
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
+                    <strong>Position:</strong> {chunkEditStart} - {chunkEditEnd} ({chunkEditEnd - chunkEditStart} chars)
+                  </div>
+                  {chunkEditDirty && (
+                    <div style={{ fontSize: 12, color: "#72ffbf", marginTop: 6 }}>
+                      ⚠️ Unsaved changes
+                    </div>
+                  )}
                 </div>
 
-                <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
-                  {(() => {
-                    const parts = splitDocByRange(docText, chunkEditStart, chunkEditEnd);
-                    return (
-                      <pre
-                        ref={chunkEditPreRef}
-                        onMouseUp={captureChunkSelection}
-                        onKeyUp={captureChunkSelection}
-                        style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.6, userSelect: "text", cursor: "text" }}
+                {/* Chunk List (toggleable) */}
+                {showChunkListInEdit && (
+                  <>
+                    <div style={{ padding: 8, borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>All Chunks</span>
+                      <button
+                        onClick={() => setShowChunkListInEdit(false)}
+                        style={{ padding: "2px 6px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 4, fontSize: 10 }}
                       >
-                        {parts.before}
-                        {parts.mid ? (
-                          <span
+                        ✕
+                      </button>
+                    </div>
+                    <div style={{ padding: 8, overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {(showAllChunksInEdit ? segments : segments.slice(0, 10)).map((s: any) => (
+                          <div
+                            key={s.id}
+                            onClick={() => {
+                              if (s.id !== chunkEditSeg?.id) {
+                                openChunkEditor(s);
+                              }
+                            }}
                             style={{
-                              background: "rgba(114,255,191,0.18)",
-                              outline: "1px solid rgba(114,255,191,0.45)",
+                              padding: 6,
                               borderRadius: 6,
-                              padding: "1px 2px",
+                              border: s.id === chunkEditSeg?.id ? "1px solid #72ffbf" : "1px solid rgba(255,255,255,0.10)",
+                              background: s.id === chunkEditSeg?.id ? "rgba(114,255,191,0.1)" : "rgba(255,255,255,0.03)",
+                              cursor: "pointer",
+                              fontSize: 11,
                             }}
                           >
-                            {parts.mid}
-                          </span>
-                        ) : null}
-                        {parts.after}
-                      </pre>
-                    );
-                  })()}
-                </div>
+                            <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                              {(s.orderIndex ?? 0) + 1}. {s.title}
+                            </div>
+                            <div style={{ opacity: 0.7 }}>
+                              {s.isManual ? "Manual" : "Auto"} • {s.mode} • {s.end - s.start} chars
+                            </div>
+                          </div>
+                        ))}
+                        {segments.length > 10 && (
+                          <div 
+                            style={{ fontSize: 10, opacity: 0.6, textAlign: "center", paddingTop: 4, cursor: "pointer", textDecoration: "underline" }}
+                            onClick={() => setShowAllChunksInEdit(true)}
+                          >
+                            ... and {segments.length - 10} more
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Show chunk list button when hidden */}
+                {!showChunkListInEdit && (
+                  <div style={{ padding: 8, flex: "1 1 auto", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <button
+                      onClick={() => setShowChunkListInEdit(true)}
+                      style={{ padding: "8px 12px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, fontSize: 12 }}
+                    >
+                      📋 Show Chunk List
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Right: fields + editor */}
-              <div style={{ flex: "1 1 45%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
-                <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,0.08)", flex: "0 0 auto" }}>
-                  <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 6 }}>
-                    {chunkEditStatus}
-                    {chunkEditDirty ? " • unsaved" : ""}
-                  </div>
+              {/* Right: Document Text + Chunk List */}
+              <div style={{ flex: "1 1 83.5%", minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                {/* Document Text Selection - 1/3 of space */}
+                <div style={{ padding: 10, borderBottom: "1px solid rgba(255,255,255,0.08)", fontWeight: 600, fontSize: 12, flex: "0 0 auto" }}>
+                  Select text below (drag) to update selection
+                </div>
+                <div style={{ padding: 12, overflow: "auto", flex: "1 1 auto", minHeight: 0, maxHeight: "40%" }}>
+                  <pre
+                    ref={chunkEditPreRef}
+                    onMouseUp={captureChunkSelection}
+                    onKeyUp={captureChunkSelection}
+                    style={{ whiteSpace: "pre-wrap", margin: 0, lineHeight: 1.6, userSelect: "text", cursor: "text", fontSize: 12 }}
+                  >
+                    {(() => {
+                      const parts = splitDocByRange(docText, chunkEditStart, chunkEditEnd);
+                      return (
+                        <>
+                          {parts.before}
+                          {parts.mid ? (
+                            <span
+                              style={{
+                                background: "rgba(114,255,191,0.18)",
+                                outline: "1px solid rgba(114,255,191,0.45)",
+                                borderRadius: 6,
+                                padding: "1px 2px",
+                              }}
+                            >
+                              {parts.mid}
+                            </span>
+                          ) : null}
+                          {parts.after}
+                        </>
+                      );
+                    })()}
+                  </pre>
+                </div>
 
-                  <div style={{ display: "grid", gap: 10 }}>
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Title</div>
-                      <input
-                        value={chunkEditTitle}
-                        onChange={(e) => setChunkEditTitle(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            saveChunkEdit();
-                          }
-                        }}
-                        style={{
-                          width: "100%",
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: "#0f1420",
-                          color: "#eaeaea",
-                        }}
-                      />
-                    </div>
-
-                    <div>
-                      <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Folder</div>
-                      <select
-                        value={chunkEditFolderId ?? "none"}
-                        onChange={(e) => setChunkEditFolderId(e.target.value === "none" ? null : e.target.value)}
-                        style={{
-                          width: "100%",
-                          padding: "10px 12px",
-                          borderRadius: 10,
-                          border: "1px solid rgba(255,255,255,0.12)",
-                          background: "#0f1420",
-                          color: "#eaeaea",
-                        }}
+                {/* Chunk List - 1/6 of space when shown */}
+                {showChunkListInEdit && (
+                  <>
+                    <div style={{ padding: 8, borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>All Chunks</span>
+                      <button
+                        onClick={() => setShowChunkListInEdit(false)}
+                        style={{ padding: "2px 6px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 4, fontSize: 10 }}
                       >
-                        <option value="none">No folder</option>
-                        {folders.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
+                        ✕
+                      </button>
+                    </div>
+                    <div style={{ padding: 8, overflow: "auto", flex: "1 1 auto", minHeight: 0, maxHeight: "30%" }}>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        {(showAllChunksInEdit ? segments : segments.slice(0, 10)).map((s: any) => (
+                          <div
+                            key={s.id}
+                            onClick={() => {
+                              if (s.id !== chunkEditSeg?.id) {
+                                openChunkEditor(s);
+                              }
+                            }}
+                            style={{
+                              padding: 6,
+                              borderRadius: 6,
+                              border: s.id === chunkEditSeg?.id ? "1px solid #72ffbf" : "1px solid rgba(255,255,255,0.10)",
+                              background: s.id === chunkEditSeg?.id ? "rgba(114,255,191,0.1)" : "rgba(255,255,255,0.03)",
+                              cursor: "pointer",
+                              fontSize: 11,
+                            }}
+                          >
+                            <div style={{ fontWeight: 600, marginBottom: 2 }}>
+                              {(s.orderIndex ?? 0) + 1}. {s.title}
+                            </div>
+                            <div style={{ opacity: 0.7 }}>
+                              {s.isManual ? "Manual" : "Auto"} • {s.mode} • {s.end - s.start} chars
+                            </div>
+                          </div>
                         ))}
-                      </select>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10 }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Start</div>
-                        <input
-                          type="number"
-                          value={chunkEditStart}
-                          onChange={(e) => setChunkEditStart(Number(e.target.value))}
-                          style={{
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "#0f1420",
-                            color: "#eaeaea",
-                          }}
-                        />
-                      </div>
-
-                      <div style={{ flex: 1 }}>
-                        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>End</div>
-                        <input
-                          type="number"
-                          value={chunkEditEnd}
-                          onChange={(e) => setChunkEditEnd(Number(e.target.value))}
-                          style={{
-                            width: "100%",
-                            padding: "10px 12px",
-                            borderRadius: 10,
-                            border: "1px solid rgba(255,255,255,0.12)",
-                            background: "#0f1420",
-                            color: "#eaeaea",
-                          }}
-                        />
+                        {segments.length > 10 && (
+                          <div 
+                            style={{ fontSize: 10, opacity: 0.6, textAlign: "center", paddingTop: 4, cursor: "pointer", textDecoration: "underline" }}
+                            onClick={() => setShowAllChunksInEdit(true)}
+                          >
+                            ... and {segments.length - 10} more
+                          </div>
+                        )}
                       </div>
                     </div>
+                  </>
+                )}
 
-                    <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, opacity: 0.85 }}>
-                      <input
-                        type="checkbox"
-                        checked={chunkEditSyncFromDoc}
-                        onChange={(e) => setChunkEditSyncFromDoc(e.target.checked)}
-                      />
-                      When capturing selection, update content from doc slice
-                    </label>
-                  </div>
-                </div>
-
-                <div style={{ padding: 12, flex: "1 1 auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
-                  <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 6 }}>Content (copy/paste allowed)</div>
-
-                  <div className="chunk-editor-shell" style={{ flex: "1 1 auto", minHeight: 0 }}>
-                    <div className="chunk-rte" style={{ flex: "1 1 auto", minHeight: 0 }}>
-                      <RichTextEditor
-                        valueHtml={chunkEditHtml}
-                        onChange={({ html, text }) => {
-                          setChunkEditHtml(html);
-                          setChunkEditContent(text);
-                          setChunkEditDirty(true);
-                        }}
-                        placeholder="Edit chunk content…"
-                      />
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", gap: 10, justifyContent: "space-between", marginTop: 10 }}>
+                {/* Show chunk list button when hidden */}
+                {!showChunkListInEdit && (
+                  <div style={{ padding: 8, flex: "1 1 auto", display: "flex", alignItems: "center", justifyContent: "center" }}>
                     <button
-                      onClick={() => {
-                        try {
-                          localStorage.setItem(segHtmlKey((chunkEditSeg as any).id), chunkEditHtml);
-                          setChunkEditDirty(false);
-                          setChunkEditStatus("Saved formatting locally ✅");
-                        } catch {
-                          setChunkEditStatus("Failed to save locally");
-                        }
-                      }}
-                      style={{ padding: "10px 12px" }}
+                      onClick={() => setShowChunkListInEdit(true)}
+                      style={{ padding: "8px 12px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 6, fontSize: 12 }}
                     >
-                      Save formatting locally
+                      📋 Show Chunk List
                     </button>
-
-                    <div style={{ display: "flex", gap: 10 }}>
-                      <button onClick={() => setChunkEditOpen(false)} style={{ padding: "10px 12px" }}>
-                        Cancel
-                      </button>
-                      <button onClick={saveChunkEdit} style={{ padding: "10px 12px" }}>
-                        Save
-                      </button>
-                    </div>
                   </div>
-
-                  {!(chunkEditSeg as any).isManual ? (
-                    <div style={{ fontSize: 12, opacity: 0.7, marginTop: 10 }}>
-                      Note: Editing AUTO chunks works, but re-running “Segment now” may regenerate AUTO chunks.
-                    </div>
-                  ) : null}
-                </div>
+                )}
               </div>
             </div>
           </div>
@@ -1593,7 +2439,13 @@ export default function DocumentWorkspace() {
         open={wizardOpen}
         onClose={() => setWizardOpen(false)}
         documentId={docId}
-        segments={segments}
+        segments={segments.map(s => ({
+          id: s.id,
+          title: s.title || "",
+          content: s.content || "",
+          mode: s.mode,
+          isManual: s.isManual
+        }))}
       />
     </div>
   );

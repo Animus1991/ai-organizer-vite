@@ -1,9 +1,21 @@
 // C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\lib\api.ts
-const API_BASE =
-  import.meta.env.VITE_API_BASE?.replace(/\/$/, "") || "http://127.0.0.1:8000/api";
+import { getErrorMessage, AppError } from './errorHandler';
+const API_BASE = "http://127.0.0.1:8000/api";
+
+// Debug: Check if API_BASE is correct
+if (typeof window !== 'undefined') {
+  console.log('🔍 API Configuration Debug:');
+  console.log('  API_BASE:', API_BASE);
+  console.log('  VITE_API_BASE_URL:', import.meta.env.VITE_API_BASE_URL);
+  console.log('  Full login URL will be:', `${API_BASE}/api/auth/login`);
+}
 
 const ACCESS_KEY = "aiorg_access_token";
 const REFRESH_KEY = "aiorg_refresh_token";
+
+// Refresh lock to prevent race conditions
+let isRefreshing = false;
+let refreshPromise: Promise<string | null> | null = null;
 
 // ------------------------------
 // Token helpers
@@ -31,24 +43,39 @@ async function refreshTokens(): Promise<string | null> {
   const refresh = getRefreshToken();
   if (!refresh) return null;
 
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ refresh_token: refresh }),
-  });
-
-  if (!res.ok) return null;
-
-  try {
-    const data = await res.json();
-    if (data?.access_token && data?.refresh_token) {
-      setTokens(data.access_token, data.refresh_token);
-      return data.access_token as string;
-    }
-    return null;
-  } catch {
-    return null;
+  // If already refreshing, return the existing promise
+  if (isRefreshing && refreshPromise) {
+    return refreshPromise;
   }
+
+  // Set lock and create refresh promise
+  isRefreshing = true;
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ refresh_token: refresh }),
+      });
+
+      if (!res.ok) return null;
+
+      const data = await res.json();
+      if (data?.access_token && data?.refresh_token) {
+        setTokens(data.access_token, data.refresh_token);
+        return data.access_token as string;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      // Clear lock after completion
+      isRefreshing = false;
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 /**
@@ -101,8 +128,12 @@ export async function login(email: string, password: string) {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || "Login failed");
+    const error = new AppError(
+      getErrorMessage({ response: res }),
+      res.status,
+      'LOGIN_FAILED'
+    );
+    throw error;
   }
 
   const data = await res.json();

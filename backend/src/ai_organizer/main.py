@@ -33,11 +33,11 @@ def _normalize_origins(value: Union[str, Iterable[str], None]) -> List[str]:
     return [p.strip() for p in s.split(",") if p.strip()]
 
 
-origins = _normalize_origins(getattr(settings, "AIORG_CORS_ORIGINS", None))
+origins = _normalize_origins(os.getenv("CORS_ORIGINS", None))
 
 # ✅ fallback για dev
 if not origins:
-    origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    origins = ["http://localhost:5173", "http://localhost:5174", "http://localhost:5175", "http://127.0.0.1:5173", "http://127.0.0.1:5174", "http://127.0.0.1:5175"]
 
 allow_all = len(origins) == 1 and origins[0] == "*"
 allow_credentials = False if allow_all else True
@@ -64,11 +64,6 @@ def on_startup() -> None:
 
 # ✅ canonical API prefix
 app.include_router(api_router, prefix="/api")
-
-
-@app.get("/health")
-def health_root():
-    return {"ok": True}
 
 
 @app.get("/api/health")
