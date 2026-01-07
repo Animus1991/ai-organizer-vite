@@ -1,6 +1,8 @@
 // src/hooks/useBatchOperations.ts
 import { useState, useCallback } from 'react';
 import type { UploadItemDTO } from '../lib/api';
+import { deleteUpload, segmentDocument } from '../lib/api';
+import { DocumentExporter } from '../lib/export';
 
 interface BatchOperation {
   id: string;
@@ -73,8 +75,8 @@ export function useBatchOperations() {
         const doc = documents[i];
         
         try {
-          // Simulate API call - replace with actual delete
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Actual API call
+          await deleteUpload(doc.uploadId);
           
           updateOperation(operationId, { 
             progress: i + 1,
@@ -112,8 +114,17 @@ export function useBatchOperations() {
         const doc = documents[i];
         
         try {
-          // Simulate API call - replace with actual segmentation
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          // Only segment if parseStatus is ok
+          if (doc.parseStatus !== 'ok') {
+            updateOperation(operationId, { 
+              progress: i + 1,
+              status: i === documents.length - 1 ? 'completed' : 'in-progress'
+            });
+            continue;
+          }
+          
+          // Actual API call
+          await segmentDocument(doc.documentId, mode);
           
           updateOperation(operationId, { 
             progress: i + 1,
@@ -147,8 +158,12 @@ export function useBatchOperations() {
     try {
       updateOperation(operationId, { status: 'in-progress' });
       
-      // Simulate export - replace with actual export
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Actual export using DocumentExporter
+      await DocumentExporter.exportMultipleDocuments(
+        documents,
+        segmentsMap,
+        { format: 'json', includeMetadata: true, includeSegments: true }
+      );
       
       updateOperation(operationId, { 
         progress: documents.length,

@@ -316,7 +316,7 @@ def list_segments(
             "meta": {
                 "count": count,
                 "mode": (mode.value if mode else "all"),
-                "last_run": (last_run.isoformat() if last_run else None),
+                "lastRun": (last_run.isoformat() if last_run else None),  # ✅ camelCase for consistency
             },
         }
 

@@ -59,9 +59,9 @@ def get_document(
             processedPath=doc.processed_path,
             upload={
                 "id": up.id if up else None,
-                "content_type": up.content_type if up else None,
-                "size_bytes": up.size_bytes if up else None,
-                "stored_path": up.stored_path if up else None,
+                "contentType": up.content_type if up else None,  # ✅ camelCase for consistency
+                "sizeBytes": up.size_bytes if up else None,  # ✅ camelCase for consistency
+                "storedPath": up.stored_path if up else None,  # ✅ camelCase for consistency
             },
         )
 
@@ -107,8 +107,8 @@ def patch_document(
             processedPath=doc.processed_path,
             upload={
                 "id": up.id if up else None,
-                "content_type": up.content_type if up else None,
-                "size_bytes": up.size_bytes if up else None,
-                "stored_path": up.stored_path if up else None,
+                "contentType": up.content_type if up else None,  # ✅ camelCase for consistency
+                "sizeBytes": up.size_bytes if up else None,  # ✅ camelCase for consistency
+                "storedPath": up.stored_path if up else None,  # ✅ camelCase for consistency
             },
         )

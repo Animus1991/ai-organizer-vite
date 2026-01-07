@@ -1,45 +1,15 @@
 // src/api/apiClient.ts
+// ✅ Consolidated: Uses refresh mechanism from lib/api.ts (single source of truth)
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from "axios";
-import { getAccessToken, getRefreshToken, setTokens, clearTokens } from "../auth/tokenStore";
+import { getAccessToken, refreshTokens, clearTokens } from "../lib/api";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
 
 export const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: false, // true μόνο αν πας σε httpOnly cookies (όχι τώρα)
+  withCredentials: false,
 });
-
-// ---- Refresh lock (ώστε αν πέσουν 10 requests μαζί με 401, να κάνει 1 refresh)
-let refreshPromise: Promise<string> | null = null;
-
-async function refreshAccessToken(): Promise<string> {
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) {
-    throw new Error("Missing refresh token");
-  }
-
-  // POST /api/auth/refresh  body: { refresh_token }
-  const res = await axios.post(
-    `${API_BASE_URL}/api/auth/refresh`,
-    { refresh_token: refreshToken },
-    { headers: { "Content-Type": "application/json" } }
-  );
-
-  const { access_token, refresh_token, token_type } = res.data as {
-    access_token: string;
-    refresh_token: string;
-    token_type?: string;
-  };
-
-  setTokens({
-    accessToken: access_token,
-    refreshToken: refresh_token,
-    tokenType: token_type ?? "bearer",
-  });
-
-  return access_token;
-}
 
 // ---- Request interceptor: βάζει Bearer access token
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -74,14 +44,14 @@ api.interceptors.response.use(
     original._retry = true;
 
     try {
-      // Αν δεν υπάρχει active refresh, ξεκίνα ένα. Αλλιώς περίμενε το ίδιο.
-      if (!refreshPromise) {
-        refreshPromise = refreshAccessToken().finally(() => {
-          refreshPromise = null;
-        });
-      }
+      // ✅ Use consolidated refresh mechanism from lib/api.ts
+      const newAccess = await refreshTokens();
 
-      const newAccess = await refreshPromise;
+      if (!newAccess) {
+        // Refresh failed -> clear tokens and reject
+        clearTokens();
+        return Promise.reject(error);
+      }
 
       // βάλε νέο token και ξαναστείλε το request
       original.headers = original.headers ?? {};

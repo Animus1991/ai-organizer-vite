@@ -7,6 +7,7 @@ import {
   login as apiLogin,
   logout as apiLogout,
 } from "../lib/api";
+import { register as apiRegister, me as apiMe } from "../api/auth";
 
 type AuthUser = { email: string } | null;
 
@@ -15,6 +16,7 @@ type AuthContextValue = {
   loading: boolean;
   isAuthed: boolean;
   login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshMe: () => Promise<void>;
 };
@@ -42,10 +44,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
+  async function register(email: string, password: string) {
+    setLoading(true);
+    try {
+      await apiRegister(email.trim(), password);
+      // After successful registration, automatically log in
+      await apiLogin(email.trim(), password);
+      setUser({ email: email.trim() });
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function refreshMe() {
-    // Δεν έχεις /api/auth/me στο backend (ή δεν το χρησιμοποιούμε εδώ).
-    // Άρα κρατάμε ό,τι email έχουμε, αλλιώς αν υπάρχει token, θεωρούμαστε authed.
-    if (!getAccessToken()) setUser(null);
+    // ✅ Load user info from backend if token exists
+    if (!getAccessToken()) {
+      setUser(null);
+      return;
+    }
+    
+    try {
+      const userData = await apiMe();
+      if (userData?.email) {
+        setUser({ email: userData.email });
+      } else {
+        setUser(null);
+      }
+    } catch (error) {
+      // If /me fails, clear user (token might be invalid)
+      setUser(null);
+    }
   }
 
   async function logout() {
@@ -61,11 +89,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
+    // ✅ Load user info from backend on mount if token exists
     if (getAccessToken()) {
-      // Αν ο χρήστης κάνει refresh, δεν ξέρουμε το email (εκτός αν το αποθηκεύεις).
-      // Για MVP: authed=true αρκεί. user θα φαίνεται ως unknown.
-      // Αν θες, μπορούμε να αποθηκεύουμε email στο localStorage.
-      setUser((u) => u ?? { email: "unknown" });
+      refreshMe();
+    } else {
+      setUser(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -76,6 +104,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       loading,
       isAuthed: !!getAccessToken(),
       login,
+      register,
       logout,
       refreshMe,
     }),

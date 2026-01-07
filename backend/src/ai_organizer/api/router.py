@@ -6,6 +6,7 @@ from ai_organizer.api.routes.upload import router as upload_router
 from ai_organizer.api.routes.segment import router as segment_router
 from ai_organizer.api.routes.upload_delete import router as upload_delete_router
 from ai_organizer.api.routes.documents import router as documents_router  # ✅ add
+from ai_organizer.api.routes.search import router as search_router
 
 api_router = APIRouter()
 
@@ -26,3 +27,6 @@ api_router.include_router(upload_delete_router, tags=["upload-delete"])
 
 # ✅ /api/documents/{id}
 api_router.include_router(documents_router, tags=["documents"])
+
+# ✅ /api/search
+api_router.include_router(search_router, tags=["search"])

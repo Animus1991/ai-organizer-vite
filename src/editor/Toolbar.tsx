@@ -1,5 +1,5 @@
 // C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\editor\Toolbar.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/react";
 import { findNext, replaceAll, replaceCurrent } from "./utils/findReplace";
 import { normalizePlainText, plainTextToHtml } from "./utils/text";
@@ -35,7 +35,7 @@ export function Toolbar({
   const hasSelection = useMemo(() => {
     const { from, to } = editor.state.selection;
     return from !== to;
-  }, [editor.state.selection]);
+  }, [editor.state.selection, selTick]);
 
   const applySegmentHighlight = () => {
     if (!hasSelection) return;

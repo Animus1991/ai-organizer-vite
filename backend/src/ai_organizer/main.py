@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ai_organizer.core.config import settings
-from ai_organizer.core.db import ensure_data_dirs, create_db_and_tables
+from ai_organizer.core.db import ensure_data_dirs
 from ai_organizer.api.router import api_router
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -56,19 +56,45 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     ensure_data_dirs()
-
-    # ΜΟΝΟ αν θες quick dev create_all (default OFF)
-    if os.getenv("AIORG_DEV_CREATE_ALL") == "1":
-        create_db_and_tables()
+    
+    # ✅ Ensure database directory exists and is accessible
+    # NOTE: Schema creation is handled by Alembic migrations only (single source of truth)
+    # Run `alembic upgrade head` before starting the server
+    from ai_organizer.core.db import DB_URL, engine
+    from pathlib import Path
+    
+    if DB_URL.startswith("sqlite"):
+        db_path_str = DB_URL.replace("sqlite:///", "")
+        db_path = Path(db_path_str)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Verify database file exists (should be created by Alembic migrations)
+        if not db_path.exists():
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"Database file not found at {db_path}. "
+                "Run 'alembic upgrade head' to create the database schema."
+            )
+    
+    # Verify database connection and log location
+    try:
+        with engine.connect() as conn:
+            # Test query to ensure database is accessible
+            from sqlalchemy import text
+            conn.execute(text("SELECT 1"))
+        print(f"✅ Database initialized successfully at: {DB_URL}")
+        print(f"   Database file exists: {Path(DB_URL.replace('sqlite:///', '')).exists()}")
+    except Exception as e:
+        print(f"⚠️  Database initialization warning: {e}")
+        # Continue anyway - tables might still be created
 
 
 # ✅ canonical API prefix
 app.include_router(api_router, prefix="/api")
 
-
-@app.get("/api/health")
-def health_api():
-    return {"ok": True}
+# ✅ Health endpoint is handled by api_router (routes/health.py)
+# Removed duplicate endpoint to maintain single source of truth
 
 STATIC_DIR = Path(__file__).resolve().parents[3] / "static"
 

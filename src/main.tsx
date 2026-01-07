@@ -6,6 +6,7 @@ import App from './pages/App'
 import { AuthProvider } from './auth/AuthProvider'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import './styles/modern-enhancements.css'
+import './styles/typography.css'
 import './style.css'
 
 ReactDOM.createRoot(document.getElementById('app')!).render(

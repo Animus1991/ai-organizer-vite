@@ -1,14 +1,8 @@
 // C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\lib\api.ts
 import { getErrorMessage, AppError } from './errorHandler';
-const API_BASE = "http://127.0.0.1:8000/api";
+import { requestDeduplicator, apiCache } from './cache';
 
-// Debug: Check if API_BASE is correct
-if (typeof window !== 'undefined') {
-  console.log('🔍 API Configuration Debug:');
-  console.log('  API_BASE:', API_BASE);
-  console.log('  VITE_API_BASE_URL:', import.meta.env.VITE_API_BASE_URL);
-  console.log('  Full login URL will be:', `${API_BASE}/api/auth/login`);
-}
+const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
 
 const ACCESS_KEY = "aiorg_access_token";
 const REFRESH_KEY = "aiorg_refresh_token";
@@ -22,11 +16,49 @@ let refreshPromise: Promise<string | null> | null = null;
 // ------------------------------
 
 export function getAccessToken(): string | null {
-  return localStorage.getItem(ACCESS_KEY);
+  // First try the current storage format
+  const token = localStorage.getItem(ACCESS_KEY);
+  if (token) return token;
+  
+  // Backward compatibility: try old tokenStore format
+  try {
+    const oldTokens = localStorage.getItem("aiorg_tokens_v1");
+    if (oldTokens) {
+      const parsed = JSON.parse(oldTokens);
+      if (parsed?.accessToken) {
+        // Migrate to new format
+        setTokens(parsed.accessToken, parsed.refreshToken || "");
+        return parsed.accessToken;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  
+  return null;
 }
 
 export function getRefreshToken(): string | null {
-  return localStorage.getItem(REFRESH_KEY);
+  // First try the current storage format
+  const token = localStorage.getItem(REFRESH_KEY);
+  if (token) return token;
+  
+  // Backward compatibility: try old tokenStore format
+  try {
+    const oldTokens = localStorage.getItem("aiorg_tokens_v1");
+    if (oldTokens) {
+      const parsed = JSON.parse(oldTokens);
+      if (parsed?.refreshToken) {
+        // Migrate to new format
+        setTokens(parsed.accessToken || "", parsed.refreshToken);
+        return parsed.refreshToken;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  
+  return null;
 }
 
 export function setTokens(accessToken: string, refreshToken: string) {
@@ -37,9 +69,11 @@ export function setTokens(accessToken: string, refreshToken: string) {
 export function clearTokens() {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
+  // Also clear old tokenStore format for backward compatibility
+  localStorage.removeItem("aiorg_tokens_v1");
 }
 
-async function refreshTokens(): Promise<string | null> {
+export async function refreshTokens(): Promise<string | null> {
   const refresh = getRefreshToken();
   if (!refresh) return null;
 
@@ -52,7 +86,7 @@ async function refreshTokens(): Promise<string | null> {
   isRefreshing = true;
   refreshPromise = (async () => {
     try {
-      const res = await fetch(`${API_BASE}/auth/refresh`, {
+      const res = await fetch(`${API_BASE}/api/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ refresh_token: refresh }),
@@ -61,7 +95,12 @@ async function refreshTokens(): Promise<string | null> {
       if (!res.ok) return null;
 
       const data = await res.json();
-      if (data?.access_token && data?.refresh_token) {
+      // ✅ Backend now returns camelCase (accessToken, refreshToken)
+      if (data?.accessToken && data?.refreshToken) {
+        setTokens(data.accessToken, data.refreshToken);
+        return data.accessToken as string;
+      } else if (data?.access_token && data?.refresh_token) {
+        // Backward compatibility: handle old snake_case format
         setTokens(data.access_token, data.refresh_token);
         return data.access_token as string;
       }
@@ -79,34 +118,96 @@ async function refreshTokens(): Promise<string | null> {
 }
 
 /**
- * Auth-aware fetch:
+ * Auth-aware fetch with request deduplication and caching:
  * - Sends Authorization: Bearer <access_token>
  * - If 401, refresh once, retry once
+ * - Deduplicates identical requests (same URL + method + body)
+ * - Caches GET requests for better performance
  */
 export async function authFetch(path: string, init: RequestInit = {}) {
-  const normalized = path.startsWith("http")
-    ? path
-    : path.startsWith("/")
-      ? path
-      : `/${path}`;
-
-  const url = path.startsWith("http") ? path : `${API_BASE}${normalized}`;
-
-  const doFetch = (token: string | null) => {
-    const headers = new Headers(init.headers || {});
-    headers.set("Accept", headers.get("Accept") || "application/json");
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers });
-  };
-
-  let res = await doFetch(getAccessToken());
-
-  if (res.status === 401) {
-    const newAccess = await refreshTokens();
-    if (newAccess) res = await doFetch(newAccess);
+  if (path.startsWith("http")) {
+    // Full URL, use as-is
+    var url = path;
+  } else {
+    // Relative path - ensure it starts with /api
+    const normalized = path.startsWith("/") ? path : `/${path}`;
+    const apiPath = normalized.startsWith("/api") ? normalized : `/api${normalized}`;
+    url = `${API_BASE}${apiPath}`;
   }
 
-  return res;
+  const method = init.method || 'GET';
+  const isGet = method === 'GET';
+  
+  // Create cache/deduplication key from URL, method, and body
+  const bodyKey = init.body ? (typeof init.body === 'string' ? init.body : JSON.stringify(init.body)) : '';
+  const dedupeKey = `fetch:${method}:${url}:${bodyKey}`;
+  const cacheKey = isGet ? `cache:${url}` : null;
+
+  // For GET requests, check cache first
+  if (isGet && cacheKey) {
+    const cached = apiCache.get(cacheKey);
+    if (cached) {
+      // Return cached response as a Response-like object
+      return new Response(JSON.stringify(cached), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  }
+
+  // Use deduplication to prevent duplicate requests
+  return requestDeduplicator.dedupe(dedupeKey, async () => {
+    const doFetch = (token: string | null) => {
+      const headers = new Headers(init.headers || {});
+      headers.set("Accept", headers.get("Accept") || "application/json");
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      return fetch(url, { ...init, headers });
+    };
+
+    let res = await doFetch(getAccessToken());
+
+    if (res.status === 401) {
+      const newAccess = await refreshTokens();
+      if (newAccess) res = await doFetch(newAccess);
+    }
+
+    // Cache successful GET responses
+    if (isGet && res.ok && cacheKey) {
+      try {
+        const data = await res.clone().json();
+        apiCache.set(cacheKey, data);
+      } catch {
+        // If response is not JSON, don't cache
+      }
+    }
+
+    // Invalidate cache for mutations (POST, PUT, DELETE, PATCH)
+    if (!isGet && res.ok) {
+      // Clear related caches based on the endpoint
+      if (url.includes('/uploads') || url.includes('/upload')) {
+        apiCache.delete('cache:' + API_BASE + '/api/uploads');
+      }
+      if (url.includes('/documents/') && url.includes('/segments')) {
+        const docIdMatch = url.match(/\/documents\/(\d+)/);
+        if (docIdMatch) {
+          const docId = docIdMatch[1];
+          // Clear segments cache for this document
+          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments`);
+          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=qa`);
+          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=paragraphs`);
+        }
+      }
+      if (url.includes('/documents/') && !url.includes('/segments')) {
+        const docIdMatch = url.match(/\/documents\/(\d+)/);
+        if (docIdMatch) {
+          const docId = docIdMatch[1];
+          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}`);
+        }
+      }
+    }
+
+    return res;
+  });
 }
 
 // ------------------------------
@@ -118,7 +219,7 @@ export async function login(email: string, password: string) {
   body.set("username", email);
   body.set("password", password);
 
-  const res = await fetch(`${API_BASE}/auth/login`, {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
@@ -128,8 +229,16 @@ export async function login(email: string, password: string) {
   });
 
   if (!res.ok) {
+    const errorText = await res.text();
+    let errorMessage = `Login failed (${res.status})`;
+    try {
+      const errorData = JSON.parse(errorText);
+      errorMessage = errorData.detail || errorData.message || errorMessage;
+    } catch {
+      errorMessage = errorText || errorMessage;
+    }
     const error = new AppError(
-      getErrorMessage({ response: res }),
+      errorMessage,
       res.status,
       'LOGIN_FAILED'
     );
@@ -137,7 +246,11 @@ export async function login(email: string, password: string) {
   }
 
   const data = await res.json();
-  if (data?.access_token && data?.refresh_token) {
+  // ✅ Backend now returns camelCase (accessToken, refreshToken)
+  if (data?.accessToken && data?.refreshToken) {
+    setTokens(data.accessToken, data.refreshToken);
+  } else if (data?.access_token && data?.refresh_token) {
+    // Backward compatibility: handle old snake_case format
     setTokens(data.access_token, data.refresh_token);
   }
   return data;
@@ -146,7 +259,7 @@ export async function login(email: string, password: string) {
 export async function logout(refreshToken?: string | null) {
   if (!refreshToken) return;
   try {
-    await fetch(`${API_BASE}/auth/logout`, {
+    await fetch(`${API_BASE}/api/auth/logout`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -204,26 +317,26 @@ export type DocumentDTO = {
   id: number;
   title?: string;
   filename?: string | null;
-  source_type?: string;
+  sourceType?: string; // ✅ Standardized to camelCase
 
   text: string;
 
-  parse_status?: "ok" | "failed" | "pending" | string;
-  parse_error?: string | null;
-  processed_path?: string | null;
+  parseStatus?: "ok" | "failed" | "pending" | string; // ✅ Standardized to camelCase
+  parseError?: string | null; // ✅ Standardized to camelCase
+  processedPath?: string | null; // ✅ Standardized to camelCase
 
   upload?: {
     id?: number | null;
-    content_type?: string | null;
-    size_bytes?: number | null;
-    stored_path?: string | null;
+    contentType?: string | null; // ✅ Standardized to camelCase
+    sizeBytes?: number | null; // ✅ Standardized to camelCase
+    storedPath?: string | null; // ✅ Standardized to camelCase
   };
 };
 
 export type SegmentsListMeta = {
   count: number;
   mode: string; // "qa" | "paragraphs" | "all"
-  last_run?: string | null;
+  lastRun?: string | null; // ✅ Standardized to camelCase
 };
 
 export type SegmentsListResponse = {
@@ -315,13 +428,13 @@ export async function listSegmentsWithMeta(documentId: number, mode?: "qa" | "pa
   if (Array.isArray(data)) {
     return {
       items: data as SegmentDTO[],
-      meta: { count: (data as any[]).length, mode: mode ?? "all", last_run: null },
+      meta: { count: (data as any[]).length, mode: mode ?? "all", lastRun: null },
     } as SegmentsListResponse;
   }
 
   return {
     items: Array.isArray(data?.items) ? (data.items as SegmentDTO[]) : [],
-    meta: (data?.meta ?? { count: 0, mode: mode ?? "all", last_run: null }) as SegmentsListMeta,
+    meta: (data?.meta ?? { count: 0, mode: mode ?? "all", lastRun: null }) as SegmentsListMeta,
   } as SegmentsListResponse;
 }
 
@@ -423,19 +536,27 @@ export async function getDocument(documentId: number): Promise<DocumentDTO> {
   }
 
   const data = await res.json().catch(() => ({}));
+  // ✅ Backend returns camelCase, frontend DTO now matches exactly - no mapping needed
   return {
     id: Number((data as any).id ?? documentId),
     title: (data as any).title ?? undefined,
     filename: (data as any).filename ?? null,
-    source_type: (data as any).source_type ?? undefined,
+    sourceType: (data as any).sourceType ?? undefined,
 
     text: String((data as any).text ?? ""),
 
-    parse_status: (data as any).parse_status ?? undefined,
-    parse_error: (data as any).parse_error ?? null,
-    processed_path: (data as any).processed_path ?? null,
+    parseStatus: (data as any).parseStatus ?? undefined,
+    parseError: (data as any).parseError ?? null,
+    processedPath: (data as any).processedPath ?? null,
 
-    upload: (data as any).upload ?? undefined,
+    upload: (data as any).upload
+      ? {
+          id: (data as any).upload.id ?? null,
+          contentType: (data as any).upload.contentType ?? null,
+          sizeBytes: (data as any).upload.sizeBytes ?? null,
+          storedPath: (data as any).upload.storedPath ?? null,
+        }
+      : undefined,
   };
 }
 
@@ -452,19 +573,27 @@ export async function patchDocument(documentId: number, patch: DocumentPatchDTO)
   }
 
   const data = await res.json().catch(() => ({}));
+  // ✅ Backend returns camelCase, frontend DTO now matches exactly - no mapping needed
   return {
     id: Number((data as any).id ?? documentId),
     title: (data as any).title ?? undefined,
     filename: (data as any).filename ?? null,
-    source_type: (data as any).source_type ?? undefined,
+    sourceType: (data as any).sourceType ?? undefined,
 
     text: String((data as any).text ?? ""),
 
-    parse_status: (data as any).parse_status ?? undefined,
-    parse_error: (data as any).parse_error ?? null,
-    processed_path: (data as any).processed_path ?? null,
+    parseStatus: (data as any).parseStatus ?? undefined,
+    parseError: (data as any).parseError ?? null,
+    processedPath: (data as any).processedPath ?? null,
 
-    upload: (data as any).upload ?? undefined,
+    upload: (data as any).upload
+      ? {
+          id: (data as any).upload.id ?? null,
+          contentType: (data as any).upload.contentType ?? null,
+          sizeBytes: (data as any).upload.sizeBytes ?? null,
+          storedPath: (data as any).upload.storedPath ?? null,
+        }
+      : undefined,
   };
 }
 
@@ -475,4 +604,44 @@ export async function getSegment(segmentId: number) {
     throw new Error(txt || `Failed to load segment (${res.status})`);
   }
   return (await res.json()) as SegmentDTO;
+}
+
+// Search API
+export interface SearchResultItem {
+  id: number;
+  type: "document" | "segment";
+  documentId: number | null;
+  title: string;
+  content: string;
+  score: number | null;
+  mode: string | null;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: SearchResultItem[];
+  total: number;
+}
+
+export async function search(
+  query: string,
+  options?: {
+    type?: "document" | "segment";
+    mode?: "qa" | "paragraphs";
+    limit?: number;
+    offset?: number;
+  }
+): Promise<SearchResponse> {
+  const params = new URLSearchParams({ q: query });
+  if (options?.type) params.append("type", options.type);
+  if (options?.mode) params.append("mode", options.mode);
+  if (options?.limit) params.append("limit", String(options.limit));
+  if (options?.offset) params.append("offset", String(options.offset));
+
+  const response = await authFetch(`/api/search?${params.toString()}`);
+  if (!response.ok) {
+    const error = await parseApiError(response);
+    throw new AppError(error.message || "Search failed", error.code || response.status);
+  }
+  return await response.json();
 }

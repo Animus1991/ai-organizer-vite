@@ -1,8 +1,7 @@
 // src/api/auth.ts
 import axios from "axios";
 import { api } from "./apiClient";
-import { setTokens, clearTokens } from "../auth/tokenStore";
-import { getRefreshToken } from "../auth/tokenStore"; // <- πρόσθεσε αυτό
+import { setTokens, clearTokens, getRefreshToken } from "../lib/api";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
@@ -26,17 +25,24 @@ export async function login(email: string, password: string) {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
 
-  const { access_token, refresh_token, token_type } = res.data as {
-    access_token: string;
-    refresh_token: string;
+  // ✅ Backend now returns camelCase (accessToken, refreshToken)
+  const { accessToken, refreshToken, tokenType } = res.data as {
+    accessToken?: string;
+    refreshToken?: string;
+    tokenType?: string;
+    // Backward compatibility
+    access_token?: string;
+    refresh_token?: string;
     token_type?: string;
   };
 
-  setTokens({
-    accessToken: access_token,
-    refreshToken: refresh_token,
-    tokenType: token_type ?? "bearer",
-  });
+  // Use camelCase if available, fallback to snake_case for backward compatibility
+  const access = accessToken ?? (res.data as any).access_token;
+  const refresh = refreshToken ?? (res.data as any).refresh_token;
+  
+  if (access && refresh) {
+    setTokens(access, refresh);
+  }
 
   return res.data;
 }

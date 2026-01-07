@@ -23,29 +23,32 @@ function safeLine(s: string) {
 
 function genOutline(segs: Seg[]) {
   const lines: string[] = [];
-  lines.push(`# Paper Outline`);
+  lines.push(`# Document Structure`);
   lines.push("");
-  lines.push(`## Abstract (draft)`);
-  lines.push(`- (Write 4–6 lines: problem → approach → result → contribution)`);
+  lines.push(`Generated from ${segs.length} selected chunk${segs.length !== 1 ? 's' : ''}`);
   lines.push("");
-  lines.push(`## Structure`);
+  lines.push(`## Overview`);
+  lines.push(`- This outline was generated from your document chunks`);
+  lines.push(`- Use it as a template for summaries, reports, or presentations`);
+  lines.push("");
+  lines.push(`## Document Structure`);
   lines.push("");
 
   segs.forEach((s, i) => {
     const t = safeLine(s.title || `Chunk ${i + 1}`);
     const preview = safeLine((s.content || "").slice(0, 220));
     lines.push(`### ${i + 1}. ${t}`);
-    lines.push(`- Source: ${s.mode ?? "—"} • ${s.isManual ? "manual" : "auto"} • id=${s.id}`);
-    if (preview) lines.push(`- Key note: ${preview}${(s.content || "").length > 220 ? "…" : ""}`);
-    lines.push(`- Claim:`);
-    lines.push(`- Evidence:`);
-    lines.push(`- Counterpoint:`);
-    lines.push(`- Transition:`);
+    lines.push(`- **Source:** ${s.mode ?? "—"} • ${s.isManual ? "manual" : "auto"} chunk`);
+    if (preview) lines.push(`- **Summary:** ${preview}${(s.content || "").length > 220 ? "…" : ""}`);
+    lines.push(`- **Key Points:**`);
+    lines.push(`  - (Add main points here)`);
+    lines.push(`- **Details:**`);
+    lines.push(`  - (Add supporting details here)`);
     lines.push("");
   });
 
-  lines.push(`## References`);
-  lines.push(`- (Add sources / citations here)`);
+  lines.push(`## Additional Notes`);
+  lines.push(`- (Add any additional information, references, or citations here)`);
   lines.push("");
   return lines.join("\n");
 }
@@ -87,7 +90,7 @@ export default function OutlineWizard({ open, onClose, documentId, segments }: P
         setOutline("");
         onClose();
       }}
-      title={`Wizard v0 • Paper Outline • Document #${documentId}`}
+      title={`Document Structure • Document #${documentId}`}
       width={820}
       footer={
         <div style={{ display: "flex", gap: 10, justifyContent: "space-between" }}>
@@ -133,8 +136,9 @@ export default function OutlineWizard({ open, onClose, documentId, segments }: P
     >
       {step === 1 ? (
         <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ opacity: 0.85 }}>
-            Διάλεξε chunks → θα σου φτιάξω “paper-outline skeleton” (Markdown) για να το δουλέψεις/παρουσιάσεις.
+          <div style={{ opacity: 0.85, fontSize: 14, lineHeight: 1.6, color: "rgba(255, 255, 255, 0.8)" }}>
+            <strong>Document Structure Generator</strong><br/>
+            Select chunks to generate a structured outline (Markdown format). Useful for creating summaries, reports, or organizing your document content.
           </div>
           <div style={{ display: "flex", gap: 10 }}>
             <button onClick={() => toggleAll(true)} style={{ padding: "10px 12px" }}>
@@ -222,8 +226,8 @@ export default function OutlineWizard({ open, onClose, documentId, segments }: P
               fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
             }}
           />
-          <div style={{ opacity: 0.75, fontSize: 12 }}>
-            Tip: Γέμισε πρώτα “Claim/Evidence/Counterpoint/Transition” ανά ενότητα → μετά κάνεις rewrite σε τελικό paper text.
+          <div style={{ opacity: 0.75, fontSize: 12, color: "rgba(255, 255, 255, 0.6)", marginTop: 12 }}>
+            💡 <strong>Tip:</strong> Fill in the "Claim/Evidence/Counterpoint/Transition" sections for each chunk, then use this as a template for your final document or presentation.
           </div>
         </div>
       ) : null}

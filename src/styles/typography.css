@@ -1,0 +1,164 @@
+/* Typography Scale based on Golden Ratio (Φ = 1.618) and Best Practices */
+
+:root {
+  /* Base font size - standard for body text */
+  --font-size-base: 16px;
+  
+  /* Golden Ratio (Φ) = 1.618 */
+  --ratio-golden: 1.618;
+  
+  /* Minor Third (more conservative) = 1.2 */
+  --ratio-minor: 1.2;
+  
+  /* Major Third = 1.25 */
+  --ratio-major: 1.25;
+  
+  /* Typography Scale - using golden ratio progression */
+  --font-size-xs: 10px;      /* base / 1.618 ≈ 9.88px, rounded to 10px */
+  --font-size-sm: 12px;      /* base / 1.333 ≈ 12px */
+  --font-size-base: 16px;    /* base */
+  --font-size-md: 18px;      /* base * 1.125 = 18px (minor third) */
+  --font-size-lg: 20px;      /* base * 1.25 = 20px (major third) */
+  --font-size-xl: 26px;      /* base * 1.618 ≈ 25.89px, rounded to 26px */
+  --font-size-2xl: 32px;     /* lg * 1.618 ≈ 32.36px, rounded to 32px */
+  --font-size-3xl: 42px;     /* xl * 1.618 ≈ 42.07px, rounded to 42px */
+  --font-size-4xl: 52px;     /* 2xl * 1.618 ≈ 51.78px, rounded to 52px */
+  --font-size-5xl: 68px;     /* 3xl * 1.618 ≈ 67.96px, rounded to 68px */
+  
+  /* Line heights - optimal for readability (1.5-1.6 for body, tighter for headings) */
+  --line-height-tight: 1.2;
+  --line-height-snug: 1.35;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.618;
+  --line-height-loose: 1.75;
+  
+  /* Letter spacing */
+  --letter-spacing-tighter: -0.02em;
+  --letter-spacing-tight: -0.01em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.01em;
+  --letter-spacing-wider: 0.02em;
+  
+  /* Font weights */
+  --font-weight-light: 300;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+}
+
+/* Typography utility classes */
+.text-xs {
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.text-sm {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.text-base {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+}
+
+.text-md {
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-normal);
+}
+
+.text-lg {
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-snug);
+}
+
+.text-xl {
+  font-size: var(--font-size-xl);
+  line-height: var(--line-height-snug);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+.text-2xl {
+  font-size: var(--font-size-2xl);
+  line-height: var(--line-height-tight);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+.text-3xl {
+  font-size: var(--font-size-3xl);
+  line-height: var(--line-height-tight);
+  letter-spacing: var(--letter-spacing-tighter);
+}
+
+.text-4xl {
+  font-size: var(--font-size-4xl);
+  line-height: var(--line-height-tight);
+  letter-spacing: var(--letter-spacing-tighter);
+}
+
+.text-5xl {
+  font-size: var(--font-size-5xl);
+  line-height: var(--line-height-tight);
+  letter-spacing: var(--letter-spacing-tighter);
+}
+
+/* Heading styles - Reduced by 1-2 scales */
+h1, .h1 {
+  font-size: var(--font-size-2xl);
+  line-height: var(--line-height-snug);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+h2, .h2 {
+  font-size: var(--font-size-xl);
+  line-height: var(--line-height-snug);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+h3, .h3 {
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-normal);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+h4, .h4 {
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-normal);
+  font-weight: var(--font-weight-semibold);
+}
+
+h5, .h5 {
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-normal);
+  font-weight: var(--font-weight-medium);
+}
+
+h6, .h6 {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-normal);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Body text */
+body, p {
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-relaxed);
+  font-weight: var(--font-weight-normal);
+}
+
+/* Small text */
+small, .text-small {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+/* Extra small text */
+.text-extra-small {
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+

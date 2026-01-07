@@ -47,7 +47,10 @@ class Settings:
 
         db_url = os.getenv("AIORG_DB_URL", "").strip()
         if not db_url:
+            # Always use absolute path to ensure consistency
             db_path = (data_dir / "app.db").resolve()
+            # Ensure parent directory exists
+            db_path.parent.mkdir(parents=True, exist_ok=True)
             db_url = f"sqlite:///{_as_posix(db_path)}"
 
         object.__setattr__(self, "AIORG_DATA_DIR", data_dir)

@@ -16,11 +16,11 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
 
   const duplicatedChunks = loadDuplicatedChunks(docId);
   
-  // Ensure folder.contents exists and is an array
-  const folderContents = folder.contents || [];
-  const folderChunks = duplicatedChunks.filter(chunk => 
-    chunk.documentId === docId && folderContents.includes(chunk.id)
-  );
+  // Ensure folder and folder.contents exist and is an array
+  const folderContents = (folder && Array.isArray(folder.contents)) ? folder.contents : [];
+  const folderChunks = Array.isArray(duplicatedChunks) ? duplicatedChunks.filter(chunk => 
+    chunk && chunk.documentId === docId && Array.isArray(folderContents) && folderContents.includes(chunk.id)
+  ) : [];
 
   const handleEditTitle = (chunkId: string, currentTitle: string) => {
     setEditingId(chunkId);
@@ -60,7 +60,7 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
         <button onClick={onBack} style={{ padding: "6px 12px", fontSize: 12 }}>
           ← Back
         </button>
-        <h3 style={{ margin: 0, fontSize: 16 }}>📁 {folder.name}</h3>
+        <h3 style={{ margin: 0, fontSize: 16 }}>📁 {folder?.name || "Unknown Folder"}</h3>
         <span style={{ fontSize: 12, opacity: 0.7 }}>
           ({folderChunks.length} chunks)
         </span>

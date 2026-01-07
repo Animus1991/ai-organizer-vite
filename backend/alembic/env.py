@@ -28,11 +28,23 @@ target_metadata = SQLModel.metadata
 
 
 def get_url() -> str:
-    # Single source: AIORG_DB_URL (ή fallback DATABASE_URL)
-    url = getattr(settings, "AIORG_DB_URL", None) or getattr(settings, "DATABASE_URL", None)
-    if not url:
-        url = "sqlite:///./data/app.db"
-    return str(url)
+    # ✅ Single source: Always use settings.AIORG_DB_URL (absolute path)
+    # This ensures migrations use the same database as the application
+    url = getattr(settings, "AIORG_DB_URL", None)
+    if url:
+        return str(url)
+    
+    # Fallback: construct from DATA_DIR (should never happen if config.py is correct)
+    from pathlib import Path
+    db_path = getattr(settings, "AIORG_DATA_DIR", None)
+    if db_path:
+        db_file = Path(db_path) / "app.db"
+        # Convert to absolute path and use forward slashes for SQLite URL
+        db_file = db_file.resolve()
+        return f"sqlite:///{db_file.as_posix()}"
+    
+    # Last resort fallback (should never happen)
+    return "sqlite:///./data/app.db"
 
 
 def run_migrations_offline() -> None:

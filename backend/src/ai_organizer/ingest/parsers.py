@@ -64,11 +64,86 @@ def _flatten_mapping_conv(conv: dict) -> str:
     return "\n".join(out).strip()
 
 def read_docx_file(path: Path) -> str:
+    """
+    Διαβάζει ολόκληρο το DOCX file, συμπεριλαμβανομένων:
+    - Paragraphs
+    - Tables (όλα τα cells)
+    - Headers και Footers
+    - Text boxes (αν υπάρχουν)
+    """
     doc = DocxDocument(str(path))
     parts = []
+    
+    # 1. Paragraphs από το main body
     for p in doc.paragraphs:
         text = (p.text or "").strip()
         if text:
             parts.append(text)
-    # paragraphs separated by blank line
+    
+    # 2. Tables - διαβάζουμε όλα τα cells
+    for table in doc.tables:
+        table_parts = []
+        for row in table.rows:
+            row_parts = []
+            for cell in row.cells:
+                cell_text = (cell.text or "").strip()
+                if cell_text:
+                    row_parts.append(cell_text)
+            if row_parts:
+                table_parts.append(" | ".join(row_parts))
+        if table_parts:
+            parts.append("\n".join(table_parts))
+    
+    # 3. Headers - διαβάζουμε από όλα τα sections
+    for section in doc.sections:
+        # Header
+        if section.header:
+            header_parts = []
+            for p in section.header.paragraphs:
+                text = (p.text or "").strip()
+                if text:
+                    header_parts.append(text)
+            # Headers tables
+            for table in section.header.tables:
+                for row in table.rows:
+                    row_parts = []
+                    for cell in row.cells:
+                        cell_text = (cell.text or "").strip()
+                        if cell_text:
+                            row_parts.append(cell_text)
+                    if row_parts:
+                        header_parts.append(" | ".join(row_parts))
+            if header_parts:
+                parts.append("[HEADER]\n" + "\n".join(header_parts))
+        
+        # Footer
+        if section.footer:
+            footer_parts = []
+            for p in section.footer.paragraphs:
+                text = (p.text or "").strip()
+                if text:
+                    footer_parts.append(text)
+            # Footer tables
+            for table in section.footer.tables:
+                for row in table.rows:
+                    row_parts = []
+                    for cell in row.cells:
+                        cell_text = (cell.text or "").strip()
+                        if cell_text:
+                            row_parts.append(cell_text)
+                    if row_parts:
+                        footer_parts.append(" | ".join(row_parts))
+            if footer_parts:
+                parts.append("[FOOTER]\n" + "\n".join(footer_parts))
+    
+    # 4. Text boxes (shapes) - αν υπάρχουν
+    try:
+        # python-docx δεν υποστηρίζει άμεσα text boxes, αλλά μπορούμε να προσπαθήσουμε
+        # μέσω XML parsing αν χρειάζεται (για μελλοντική βελτίωση)
+        pass
+    except Exception:
+        # Αν αποτύχει, συνεχίζουμε χωρίς text boxes
+        pass
+    
+    # Ενώνουμε όλα με διπλή γραμμή για καλύτερη αναγνωσιμότητα
     return "\n\n".join(parts)

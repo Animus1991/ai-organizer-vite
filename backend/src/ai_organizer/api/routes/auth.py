@@ -36,9 +36,10 @@ class RegisterOut(BaseModel):
 
 
 class TokenOut(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
+    # ✅ Standardized to camelCase for consistency with other DTOs
+    accessToken: str
+    refreshToken: str
+    tokenType: str = "bearer"
 
 
 class RefreshIn(BaseModel):
@@ -124,7 +125,7 @@ def login(
     )
     session.commit()
 
-    return TokenOut(access_token=access, refresh_token=refresh)
+    return TokenOut(accessToken=access, refreshToken=refresh)
 
 
 @router.post("/refresh", response_model=TokenOut)
@@ -164,7 +165,7 @@ def refresh(payload: RefreshIn, session: Session = Depends(get_db)) -> TokenOut:
     )
     session.commit()
 
-    return TokenOut(access_token=access, refresh_token=new_refresh)
+    return TokenOut(accessToken=access, refreshToken=new_refresh)
 
 
 @router.post("/logout", response_model=dict)

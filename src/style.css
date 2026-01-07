@@ -41,7 +41,8 @@ button {
   border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.12);
   padding: 0.6em 1.1em;
-  font-size: 0.95em;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
   font-weight: 600;
   font-family: inherit;
   background: rgba(255,255,255,0.04);
@@ -73,8 +74,8 @@ button:focus-visible {
 .ws-summary {
   flex: 0 0 auto;
   padding: 6px 10px;
-  font-size: 12px;
-  line-height: 1.15;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
   border: 1px solid rgba(255,255,255,0.10);
   border-radius: 12px;
   background: rgba(255,255,255,0.02);

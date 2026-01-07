@@ -32,20 +32,39 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
     <Drawer open={open} onClose={onClose} title={`Folders • Document #${docId}`} width={560}>
       <div className="space-y-4">
         {/* Add New Folder */}
-        <div className="bg-surface-elevated border border-border rounded-lg p-4">
-          <div className="flex gap-3">
+        <div
+          style={{
+            background: "linear-gradient(135deg, rgba(20, 20, 30, 0.8) 0%, rgba(15, 15, 25, 0.8) 100%)",
+            backdropFilter: "blur(20px)",
+            border: "1px solid rgba(255, 255, 255, 0.08)",
+            borderRadius: "16px",
+            padding: "20px",
+            boxShadow: "0 4px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.05) inset",
+          }}
+        >
+          <div style={{ display: "flex", gap: 12 }}>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="New folder name…"
-              className="flex-1 px-4 py-3 bg-surface border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary transition-colors"
               style={{
                 flex: 1,
-                padding: "10px 12px",
-                borderRadius: 10,
-                border: "1px solid rgba(255,255,255,0.12)",
-                background: "#0f1420",
+                padding: "12px 16px",
+                borderRadius: "12px",
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(0, 0, 0, 0.3)",
                 color: "#eaeaea",
+                fontSize: "var(--font-size-base)",
+                lineHeight: "var(--line-height-normal)",
+                transition: "all 0.2s ease",
+              }}
+              onFocus={(e) => {
+                e.currentTarget.style.borderColor = "rgba(99, 102, 241, 0.5)";
+                e.currentTarget.style.boxShadow = "0 0 0 3px rgba(99, 102, 241, 0.1)";
+              }}
+              onBlur={(e) => {
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
+                e.currentTarget.style.boxShadow = "none";
               }}
             />
             <button
@@ -55,14 +74,35 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
                 setName("");
                 refresh();
               }}
-              className={`px-6 py-3 rounded-lg font-medium transition-all duration-200 flex items-center gap-2 ${
-                canAdd 
-                  ? "bg-primary text-white hover:bg-primary-hover transform hover:translate-y-[-1px] shadow-md" 
-                  : "bg-gray-600 text-gray-400 cursor-not-allowed"
-              }`}
-              style={{ padding: "10px 12px", opacity: canAdd ? 1 : 0.6 }}
+              style={{
+                padding: "12px 20px",
+                background: canAdd ? "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)" : "rgba(107, 114, 128, 0.3)",
+                border: "none",
+                borderRadius: "12px",
+                color: "white",
+                fontWeight: 600,
+                fontSize: "var(--font-size-base)",
+                lineHeight: "var(--line-height-normal)",
+                cursor: canAdd ? "pointer" : "not-allowed",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                transition: "all 0.2s ease",
+                boxShadow: canAdd ? "0 4px 12px rgba(99, 102, 241, 0.3)" : "none",
+                opacity: canAdd ? 1 : 0.6,
+              }}
+              onMouseEnter={(e) => {
+                if (canAdd) {
+                  e.currentTarget.style.transform = "translateY(-2px)";
+                  e.currentTarget.style.boxShadow = "0 6px 16px rgba(99, 102, 241, 0.4)";
+                }
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = "translateY(0)";
+                e.currentTarget.style.boxShadow = canAdd ? "0 4px 12px rgba(99, 102, 241, 0.3)" : "none";
+              }}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: "16px", height: "16px" }}>
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
               Add

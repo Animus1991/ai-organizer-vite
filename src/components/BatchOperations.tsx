@@ -30,7 +30,12 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
     const selectedDocs = documents.filter(doc => selectedItems.has(doc.documentId));
     if (selectedDocs.length === 0) return;
     
-    const confirmed = window.confirm(`Delete ${selectedDocs.length} selected document(s)?`);
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ${selectedDocs.length} selected document(s)?\n\n` +
+      `This will permanently delete:\n` +
+      selectedDocs.map(d => `- ${d.filename}`).join('\n') +
+      `\n\nThis action cannot be undone.`
+    );
     if (!confirmed) return;
     
     await batchDelete(selectedDocs);
@@ -72,37 +77,93 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
   return (
     <div className="bg-surface border border-border rounded-lg p-4 mb-4">
       {/* Batch Mode Toggle */}
-      <div className="flex justify-between items-center mb-4">
-        <div className="flex items-center gap-4">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "20px", flexWrap: "wrap", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <button
             onClick={toggleBatchMode}
-            className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-              isBatchMode 
-                ? 'bg-primary text-white' 
-                : 'bg-surface-elevated border border-border hover:bg-surface'
-            }`}
+            style={{
+              padding: "12px 20px",
+              background: isBatchMode 
+                ? "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)" 
+                : "rgba(255, 255, 255, 0.05)",
+              border: isBatchMode ? "none" : "1px solid rgba(255, 255, 255, 0.1)",
+              borderRadius: "12px",
+              color: isBatchMode ? "white" : "#eaeaea",
+              fontWeight: 600,
+              fontSize: "var(--font-size-base)",
+              lineHeight: "var(--line-height-normal)",
+              cursor: "pointer",
+              transition: "all 0.2s ease",
+              boxShadow: isBatchMode ? "0 4px 12px rgba(99, 102, 241, 0.3)" : "none",
+            }}
+            onMouseEnter={(e) => {
+              if (!isBatchMode) {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+              }
+            }}
+            onMouseLeave={(e) => {
+              if (!isBatchMode) {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
+              }
+            }}
           >
             {isBatchMode ? 'Exit Batch Mode' : 'Batch Mode'}
           </button>
           
           {isBatchMode && (
-            <span className="text-sm text-secondary">
+            <span style={{ fontSize: "var(--font-size-base)", color: "rgba(255, 255, 255, 0.7)" }}>
               {selectedCount} of {documents.length} selected
             </span>
           )}
         </div>
 
         {isBatchMode && (
-          <div className="flex gap-2">
+          <div style={{ display: "flex", gap: "8px" }}>
             <button
-              onClick={selectAll}
-              className="px-3 py-1 bg-surface-elevated border border-border rounded-lg hover:bg-surface text-sm"
+              onClick={() => selectAll(documents.map(d => d.documentId))}
+              style={{
+                padding: "8px 16px",
+                background: "rgba(255, 255, 255, 0.05)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: "8px",
+                color: "#eaeaea",
+                fontSize: "var(--font-size-sm)",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
+              }}
             >
               Select All
             </button>
             <button
               onClick={clearSelection}
-              className="px-3 py-1 bg-surface-elevated border border-border rounded-lg hover:bg-surface text-sm"
+              style={{
+                padding: "8px 16px",
+                background: "rgba(255, 255, 255, 0.05)",
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                borderRadius: "8px",
+                color: "#eaeaea",
+                fontSize: "var(--font-size-sm)",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
+                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
+              }}
             >
               Clear Selection
             </button>
@@ -116,15 +177,29 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
           <h3 className="font-medium mb-3">Batch Actions</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {/* Batch Delete */}
-            <div className="bg-surface-elevated border border-border rounded-lg p-3">
-              <h4 className="font-medium text-sm mb-2">Delete</h4>
-              <p className="text-xs text-secondary mb-3">
+            <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "12px", padding: "16px" }}>
+              <h4 style={{ fontSize: "var(--font-size-base)", fontWeight: 600, color: "#eaeaea", marginBottom: "8px" }}>Delete</h4>
+              <p style={{ fontSize: "var(--font-size-sm)", color: "rgba(255, 255, 255, 0.6)", marginBottom: "12px" }}>
                 Permanently delete selected documents
               </p>
               <button
                 onClick={handleBatchDelete}
                 disabled={getOperationStatus('delete') === 'in-progress'}
-                className="w-full px-3 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 disabled:opacity-50 text-sm"
+                style={{
+                  width: "100%",
+                  padding: "10px 16px",
+                  background: getOperationStatus('delete') === 'in-progress' 
+                    ? "rgba(239, 68, 68, 0.5)" 
+                    : "linear-gradient(135deg, #ef4444 0%, #dc2626 100%)",
+                  border: "none",
+                  borderRadius: "8px",
+                  color: "white",
+                  fontWeight: 600,
+                  fontSize: "var(--font-size-sm)",
+                  cursor: getOperationStatus('delete') === 'in-progress' ? "not-allowed" : "pointer",
+                  opacity: getOperationStatus('delete') === 'in-progress' ? 0.7 : 1,
+                  transition: "all 0.2s ease",
+                }}
               >
                 {getOperationStatus('delete') === 'in-progress' ? (
                   <LoadingSpinner text="Deleting..." />
@@ -133,14 +208,19 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
                 )}
               </button>
               {getOperationStatus('delete') === 'in-progress' && (
-                <div className="mt-2">
-                  <div className="w-full bg-surface border border-border rounded-full h-2">
+                <div style={{ marginTop: "12px" }}>
+                  <div style={{ width: "100%", background: "rgba(0, 0, 0, 0.3)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "8px", height: "8px", overflow: "hidden" }}>
                     <div 
-                      className="bg-red-500 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${getOperationProgress('delete')?.percentage || 0}%` }}
+                      style={{ 
+                        background: "#ef4444", 
+                        height: "100%", 
+                        borderRadius: "8px",
+                        transition: "width 0.3s ease",
+                        width: `${getOperationProgress('delete')?.percentage || 0}%` 
+                      }}
                     />
                   </div>
-                  <div className="text-xs text-secondary mt-1 text-center">
+                  <div style={{ fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.6)", marginTop: "8px", textAlign: "center" }}>
                     {getOperationProgress('delete')?.progress} / {getOperationProgress('delete')?.total}
                   </div>
                 </div>
@@ -148,16 +228,30 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
             </div>
 
             {/* Batch Segment */}
-            <div className="bg-surface-elevated border border-border rounded-lg p-3">
-              <h4 className="font-medium text-sm mb-2">Segment</h4>
-              <p className="text-xs text-secondary mb-3">
+            <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "12px", padding: "16px" }}>
+              <h4 style={{ fontSize: "var(--font-size-base)", fontWeight: 600, color: "#eaeaea", marginBottom: "8px" }}>Segment</h4>
+              <p style={{ fontSize: "var(--font-size-sm)", color: "rgba(255, 255, 255, 0.6)", marginBottom: "12px" }}>
                 Create segments for selected documents
               </p>
-              <div className="space-y-2">
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
                 <button
                   onClick={() => handleBatchSegment('qa')}
                   disabled={getOperationStatus('segment') === 'in-progress'}
-                  className="w-full px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:opacity-50 text-sm"
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    background: getOperationStatus('segment') === 'in-progress' 
+                      ? "rgba(59, 130, 246, 0.5)" 
+                      : "linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)",
+                    border: "none",
+                    borderRadius: "8px",
+                    color: "white",
+                    fontWeight: 600,
+                    fontSize: "var(--font-size-sm)",
+                    cursor: getOperationStatus('segment') === 'in-progress' ? "not-allowed" : "pointer",
+                    opacity: getOperationStatus('segment') === 'in-progress' ? 0.7 : 1,
+                    transition: "all 0.2s ease",
+                  }}
                 >
                   {getOperationStatus('segment') === 'in-progress' ? (
                     <LoadingSpinner text="Segmenting..." />
@@ -168,7 +262,21 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
                 <button
                   onClick={() => handleBatchSegment('paragraphs')}
                   disabled={getOperationStatus('segment') === 'in-progress'}
-                  className="w-full px-3 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 text-sm"
+                  style={{
+                    width: "100%",
+                    padding: "10px 16px",
+                    background: getOperationStatus('segment') === 'in-progress' 
+                      ? "rgba(16, 185, 129, 0.5)" 
+                      : "linear-gradient(135deg, #10b981 0%, #059669 100%)",
+                    border: "none",
+                    borderRadius: "8px",
+                    color: "white",
+                    fontWeight: 600,
+                    fontSize: "var(--font-size-sm)",
+                    cursor: getOperationStatus('segment') === 'in-progress' ? "not-allowed" : "pointer",
+                    opacity: getOperationStatus('segment') === 'in-progress' ? 0.7 : 1,
+                    transition: "all 0.2s ease",
+                  }}
                 >
                   {getOperationStatus('segment') === 'in-progress' ? (
                     <LoadingSpinner text="Segmenting..." />
@@ -178,14 +286,19 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
                 </button>
               </div>
               {getOperationStatus('segment') === 'in-progress' && (
-                <div className="mt-2">
-                  <div className="w-full bg-surface border border-border rounded-full h-2">
+                <div style={{ marginTop: "12px" }}>
+                  <div style={{ width: "100%", background: "rgba(0, 0, 0, 0.3)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "8px", height: "8px", overflow: "hidden" }}>
                     <div 
-                      className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${getOperationProgress('segment')?.percentage || 0}%` }}
+                      style={{ 
+                        background: "#3b82f6", 
+                        height: "100%", 
+                        borderRadius: "8px",
+                        transition: "width 0.3s ease",
+                        width: `${getOperationProgress('segment')?.percentage || 0}%` 
+                      }}
                     />
                   </div>
-                  <div className="text-xs text-secondary mt-1 text-center">
+                  <div style={{ fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.6)", marginTop: "8px", textAlign: "center" }}>
                     {getOperationProgress('segment')?.progress} / {getOperationProgress('segment')?.total}
                   </div>
                 </div>
@@ -193,15 +306,29 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
             </div>
 
             {/* Batch Export */}
-            <div className="bg-surface-elevated border border-border rounded-lg p-3">
-              <h4 className="font-medium text-sm mb-2">Export</h4>
-              <p className="text-xs text-secondary mb-3">
+            <div style={{ background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "12px", padding: "16px" }}>
+              <h4 style={{ fontSize: "var(--font-size-base)", fontWeight: 600, color: "#eaeaea", marginBottom: "8px" }}>Export</h4>
+              <p style={{ fontSize: "var(--font-size-sm)", color: "rgba(255, 255, 255, 0.6)", marginBottom: "12px" }}>
                 Export selected documents
               </p>
               <button
                 onClick={handleBatchExport}
                 disabled={getOperationStatus('export') === 'in-progress'}
-                className="w-full px-3 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 disabled:opacity-50 text-sm"
+                style={{
+                  width: "100%",
+                  padding: "10px 16px",
+                  background: getOperationStatus('export') === 'in-progress' 
+                    ? "rgba(139, 92, 246, 0.5)" 
+                    : "linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)",
+                  border: "none",
+                  borderRadius: "8px",
+                  color: "white",
+                  fontWeight: 600,
+                  fontSize: "var(--font-size-sm)",
+                  cursor: getOperationStatus('export') === 'in-progress' ? "not-allowed" : "pointer",
+                  opacity: getOperationStatus('export') === 'in-progress' ? 0.7 : 1,
+                  transition: "all 0.2s ease",
+                }}
               >
                 {getOperationStatus('export') === 'in-progress' ? (
                   <LoadingSpinner text="Exporting..." />
@@ -210,14 +337,19 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
                 )}
               </button>
               {getOperationStatus('export') === 'in-progress' && (
-                <div className="mt-2">
-                  <div className="w-full bg-surface border border-border rounded-full h-2">
+                <div style={{ marginTop: "12px" }}>
+                  <div style={{ width: "100%", background: "rgba(0, 0, 0, 0.3)", border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "8px", height: "8px", overflow: "hidden" }}>
                     <div 
-                      className="bg-purple-500 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${getOperationProgress('export')?.percentage || 0}%` }}
+                      style={{ 
+                        background: "#8b5cf6", 
+                        height: "100%", 
+                        borderRadius: "8px",
+                        transition: "width 0.3s ease",
+                        width: `${getOperationProgress('export')?.percentage || 0}%` 
+                      }}
                     />
                   </div>
-                  <div className="text-xs text-secondary mt-1 text-center">
+                  <div style={{ fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.6)", marginTop: "8px", textAlign: "center" }}>
                     {getOperationProgress('export')?.progress} / {getOperationProgress('export')?.total}
                   </div>
                 </div>
@@ -229,11 +361,24 @@ export function BatchOperations({ documents, segmentsMap, onRefresh }: BatchOper
 
       {/* Selection Info */}
       {!isBatchMode && selectedCount > 0 && (
-        <div className="text-sm text-secondary">
-          {selectedCount} document{selectedCount > 1 ? 's' : ''} selected. 
+        <div style={{ fontSize: "var(--font-size-sm)", color: "rgba(255, 255, 255, 0.6)", marginTop: "16px" }}>
+          {selectedCount} document{selectedCount > 1 ? 's' : ''} selected.{" "}
           <button 
             onClick={toggleBatchMode}
-            className="text-primary hover:underline ml-2"
+            style={{
+              color: "#6366f1",
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              textDecoration: "underline",
+              fontSize: "var(--font-size-sm)",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.color = "#8b5cf6";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.color = "#6366f1";
+            }}
           >
             Enter batch mode
           </button>

@@ -14,6 +14,7 @@ export default function RecycleBinDrawer({ docId, open, onClose, onRestored }: R
   if (!open) return null;
 
   const recycledChunks = loadRecycledChunks(docId);
+  const safeRecycledChunks = Array.isArray(recycledChunks) ? recycledChunks : [];
   const now = Date.now();
 
   const formatTimeRemaining = (deletedAt: number) => {
@@ -32,10 +33,10 @@ export default function RecycleBinDrawer({ docId, open, onClose, onRestored }: R
   };
 
   const handleSelectAll = () => {
-    if (selectedItems.size === recycledChunks.length) {
+    if (selectedItems.size === safeRecycledChunks.length) {
       setSelectedItems(new Set());
     } else {
-      setSelectedItems(new Set(recycledChunks.map(chunk => chunk.id)));
+      setSelectedItems(new Set(safeRecycledChunks.map(chunk => chunk.id)));
     }
   };
 
@@ -75,7 +76,7 @@ export default function RecycleBinDrawer({ docId, open, onClose, onRestored }: R
 
   const handleAutoCleanup = () => {
     if (window.confirm("Auto-cleanup will permanently delete all expired items (older than 30 days). Continue?")) {
-      const expired = recycledChunks.filter(chunk => (now - chunk.deletedAt) > (30 * 24 * 60 * 60 * 1000));
+      const expired = safeRecycledChunks.filter(chunk => (now - chunk.deletedAt) > (30 * 24 * 60 * 60 * 1000));
       expired.forEach(chunk => {
         permanentlyDeleteChunk(docId, chunk.id);
       });
@@ -114,7 +115,7 @@ export default function RecycleBinDrawer({ docId, open, onClose, onRestored }: R
             onClick={handleSelectAll}
             style={{ padding: "4px 8px", fontSize: 11 }}
           >
-            {selectedItems.size === recycledChunks.length ? "Deselect All" : "Select All"}
+            {selectedItems.size === safeRecycledChunks.length ? "Deselect All" : "Select All"}
           </button>
           
           <button 
@@ -156,13 +157,13 @@ export default function RecycleBinDrawer({ docId, open, onClose, onRestored }: R
       </div>
 
       <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-        {!recycledChunks.length ? (
+        {!safeRecycledChunks.length ? (
           <div style={{ textAlign: "center", opacity: 0.7, padding: 40 }}>
             Recycle bin is empty
           </div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
-            {recycledChunks.map((chunk: any) => {
+            {safeRecycledChunks.map((chunk: any) => {
               const isExpired = (now - chunk.deletedAt) > (30 * 24 * 60 * 60 * 1000);
               const isSelected = selectedItems.has(chunk.id);
               

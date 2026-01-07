@@ -96,8 +96,9 @@ export function useFileUpload() {
           reject(new Error('Upload cancelled'));
         });
 
-        // Setup and send
-        xhr.open('POST', 'http://127.0.0.1:8000/api/upload');
+        // Setup and send - use API_BASE from environment or default
+        const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+        xhr.open('POST', `${API_BASE}/api/upload`);
         
         // Add auth header
         const token = localStorage.getItem('aiorg_access_token');
