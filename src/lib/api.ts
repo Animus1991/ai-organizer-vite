@@ -155,59 +155,64 @@ export async function authFetch(path: string, init: RequestInit = {}) {
     }
   }
 
-  // Use deduplication to prevent duplicate requests
-  return requestDeduplicator.dedupe(dedupeKey, async () => {
-    const doFetch = (token: string | null) => {
-      const headers = new Headers(init.headers || {});
-      headers.set("Accept", headers.get("Accept") || "application/json");
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-      return fetch(url, { ...init, headers });
-    };
+  // NOTE: To avoid 'body stream already read' errors when multiple callers
+  // share the same Response instance, we intentionally DO NOT use
+  // requestDeduplicator.dedupe here. Each authFetch call performs its own
+  // fetch and returns its own Response object. The lightweight GET cache
+  // above still provides good performance.
 
-    let res = await doFetch(getAccessToken());
+  const doFetch = (token: string | null) => {
+    const headers = new Headers(init.headers || {});
+    headers.set("Accept", headers.get("Accept") || "application/json");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    return fetch(url, { ...init, headers });
+  };
 
-    if (res.status === 401) {
-      const newAccess = await refreshTokens();
-      if (newAccess) res = await doFetch(newAccess);
+  let res = await doFetch(getAccessToken());
+
+  if (res.status === 401) {
+    const newAccess = await refreshTokens();
+    if (newAccess) res = await doFetch(newAccess);
+  }
+
+  // Cache successful GET responses
+  if (isGet && res.ok && cacheKey) {
+    try {
+      const data = await res.clone().json();
+      apiCache.set(cacheKey, data);
+    } catch {
+      // If response is not JSON, don't cache
     }
+  }
 
-    // Cache successful GET responses
-    if (isGet && res.ok && cacheKey) {
-      try {
-        const data = await res.clone().json();
-        apiCache.set(cacheKey, data);
-      } catch {
-        // If response is not JSON, don't cache
-      }
+  // Invalidate cache for mutations (POST, PUT, DELETE, PATCH)
+  if (!isGet && res.ok) {
+    // Clear related caches based on the endpoint
+    if (url.includes('/uploads') || url.includes('/upload')) {
+      // Clear all uploads cache variations (with/without query params)
+      const baseCacheKey = 'cache:' + API_BASE + '/api/uploads';
+      apiCache.deleteByPrefix(baseCacheKey);
     }
-
-    // Invalidate cache for mutations (POST, PUT, DELETE, PATCH)
-    if (!isGet && res.ok) {
-      // Clear related caches based on the endpoint
-      if (url.includes('/uploads') || url.includes('/upload')) {
-        apiCache.delete('cache:' + API_BASE + '/api/uploads');
-      }
-      if (url.includes('/documents/') && url.includes('/segments')) {
-        const docIdMatch = url.match(/\/documents\/(\d+)/);
-        if (docIdMatch) {
-          const docId = docIdMatch[1];
-          // Clear segments cache for this document
-          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments`);
-          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=qa`);
-          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=paragraphs`);
-        }
-      }
-      if (url.includes('/documents/') && !url.includes('/segments')) {
-        const docIdMatch = url.match(/\/documents\/(\d+)/);
-        if (docIdMatch) {
-          const docId = docIdMatch[1];
-          apiCache.delete(`cache:${API_BASE}/api/documents/${docId}`);
-        }
+    if (url.includes('/documents/') && url.includes('/segments')) {
+      const docIdMatch = url.match(/\/documents\/(\d+)/);
+      if (docIdMatch) {
+        const docId = docIdMatch[1];
+        // Clear segments cache for this document
+        apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments`);
+        apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=qa`);
+        apiCache.delete(`cache:${API_BASE}/api/documents/${docId}/segments?mode=paragraphs`);
       }
     }
+    if (url.includes('/documents/') && !url.includes('/segments')) {
+      const docIdMatch = url.match(/\/documents\/(\d+)/);
+      if (docIdMatch) {
+        const docId = docIdMatch[1];
+        apiCache.delete(`cache:${API_BASE}/api/documents/${docId}`);
+      }
+    }
+  }
 
-    return res;
-  });
+  return res;
 }
 
 // ------------------------------
@@ -360,14 +365,37 @@ export type DocumentPatchDTO = {
 // Uploads
 // ------------------------------
 
-export async function listUploads(): Promise<UploadItemDTO[]> {
-  const res = await authFetch(`/uploads`);
+export type PaginatedResponse<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages?: number;
+};
+
+export async function listUploads(page: number = 1, pageSize: number = 50): Promise<PaginatedResponse<UploadItemDTO>> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  const res = await authFetch(`/uploads?${params.toString()}`);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`Failed to load uploads: ${res.status} ${txt}`);
   }
-  const data = await res.json().catch(() => []);
-  return Array.isArray(data) ? (data as UploadItemDTO[]) : [];
+  const data = await res.json().catch(() => ({ items: [], total: 0, page: 1, pageSize: 50 }));
+  
+  // Backward compatibility: if response is array, wrap it
+  if (Array.isArray(data)) {
+    return {
+      items: data as UploadItemDTO[],
+      total: data.length,
+      page: 1,
+      pageSize: data.length,
+    };
+  }
+  
+  return data as PaginatedResponse<UploadItemDTO>;
 }
 
 export async function uploadFile(file: File): Promise<UploadResponseDTO> {
@@ -439,8 +467,13 @@ export async function listSegmentsWithMeta(documentId: number, mode?: "qa" | "pa
 }
 
 // compatibility old name (kept)
-export async function listSegments(documentId: number, mode?: "qa" | "paragraphs"): Promise<SegmentsListResponse> {
-  return listSegmentsWithMeta(documentId, mode);
+export async function listSegments(
+  documentId: number, 
+  mode?: "qa" | "paragraphs",
+  page: number = 1,
+  pageSize: number = 100
+): Promise<SegmentsListResponse> {
+  return listSegmentsWithMeta(documentId, mode, page, pageSize);
 }
 
 export async function patchSegment(segmentId: number, patch: SegmentPatchDTO): Promise<SegmentDTO> {
@@ -604,6 +637,259 @@ export async function getSegment(segmentId: number) {
     throw new Error(txt || `Failed to load segment (${res.status})`);
   }
   return (await res.json()) as SegmentDTO;
+}
+
+// ============================================================================
+// Workspace API (Folders, Smart Notes, Document Notes)
+// ============================================================================
+
+export type FolderDTO = {
+  id: number;
+  name: string;
+  documentId: number;
+  createdAt: string;
+  itemCount: number;
+};
+
+export type FolderItemDTO = {
+  id: number;
+  folderId: number;
+  segmentId?: number | null;
+  chunkId?: string | null;
+  chunkTitle?: string | null;
+  chunkContent?: string | null;
+  chunkMode?: string | null;
+  chunkIsManual?: boolean | null;
+  chunkOrderIndex?: number | null;
+  createdAt: string;
+};
+
+export type FolderWithItemsDTO = FolderDTO & {
+  items: FolderItemDTO[];
+};
+
+export type SmartNoteDTO = {
+  id: number;
+  documentId: number;
+  content: string;
+  html: string;
+  tags: string[];
+  category: string;
+  priority: string;
+  chunkId?: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DocumentNoteDTO = {
+  id: number;
+  documentId: number;
+  html: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Folders
+export async function listFolders(documentId: number): Promise<FolderDTO[]> {
+  const res = await authFetch(`/documents/${documentId}/folders`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list folders (${res.status})`);
+  }
+  return (await res.json()) as FolderDTO[];
+}
+
+export async function getFolder(folderId: number): Promise<FolderWithItemsDTO> {
+  const res = await authFetch(`/folders/${folderId}`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to get folder (${res.status})`);
+  }
+  return (await res.json()) as FolderWithItemsDTO;
+}
+
+export async function createFolder(documentId: number, name: string): Promise<FolderDTO> {
+  const res = await authFetch(`/folders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ documentId, name }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to create folder (${res.status})`);
+  }
+  return (await res.json()) as FolderDTO;
+}
+
+export async function updateFolder(folderId: number, name: string): Promise<FolderDTO> {
+  const res = await authFetch(`/folders/${folderId}?name=${encodeURIComponent(name)}`, {
+    method: "PATCH",
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to update folder (${res.status})`);
+  }
+  return (await res.json()) as FolderDTO;
+}
+
+export async function deleteFolder(folderId: number): Promise<void> {
+  const res = await authFetch(`/folders/${folderId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to delete folder (${res.status})`);
+  }
+}
+
+export async function createFolderItem(payload: {
+  folderId: number;
+  segmentId?: number | null;
+  chunkId?: string | null;
+  chunkTitle?: string | null;
+  chunkContent?: string | null;
+  chunkMode?: string | null;
+  chunkIsManual?: boolean | null;
+  chunkOrderIndex?: number | null;
+}): Promise<FolderItemDTO> {
+  const res = await authFetch(`/folder-items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to create folder item (${res.status})`);
+  }
+  return (await res.json()) as FolderItemDTO;
+}
+
+export async function deleteFolderItem(itemId: number): Promise<void> {
+  const res = await authFetch(`/folder-items/${itemId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to delete folder item (${res.status})`);
+  }
+}
+
+// Smart Notes
+export async function listSmartNotes(documentId: number): Promise<SmartNoteDTO[]> {
+  const res = await authFetch(`/documents/${documentId}/smart-notes`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list smart notes (${res.status})`);
+  }
+  return (await res.json()) as SmartNoteDTO[];
+}
+
+export async function createSmartNote(payload: {
+  documentId: number;
+  content: string;
+  html: string;
+  tags?: string[];
+  category?: string;
+  priority?: string;
+  chunkId?: number | null;
+}): Promise<SmartNoteDTO> {
+  const res = await authFetch(`/smart-notes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to create smart note (${res.status})`);
+  }
+  return (await res.json()) as SmartNoteDTO;
+}
+
+export async function updateSmartNote(
+  noteId: number,
+  payload: {
+    content?: string;
+    html?: string;
+    tags?: string[];
+    category?: string;
+    priority?: string;
+    chunkId?: number | null;
+  }
+): Promise<SmartNoteDTO> {
+  const res = await authFetch(`/smart-notes/${noteId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to update smart note (${res.status})`);
+  }
+  return (await res.json()) as SmartNoteDTO;
+}
+
+export async function deleteSmartNote(noteId: number): Promise<void> {
+  const res = await authFetch(`/smart-notes/${noteId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to delete smart note (${res.status})`);
+  }
+}
+
+// Document Notes
+export async function getDocumentNote(documentId: number): Promise<DocumentNoteDTO | null> {
+  const res = await authFetch(`/documents/${documentId}/note`);
+  if (!res.ok) {
+    if (res.status === 404) return null;
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to get document note (${res.status})`);
+  }
+  return (await res.json()) as DocumentNoteDTO | null;
+}
+
+export async function upsertDocumentNote(
+  documentId: number,
+  html: string,
+  text: string
+): Promise<DocumentNoteDTO> {
+  const res = await authFetch(`/documents/${documentId}/note`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ html, text }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to upsert document note (${res.status})`);
+  }
+  return (await res.json()) as DocumentNoteDTO;
+}
+
+export async function deleteDocumentNote(documentId: number): Promise<void> {
+  const res = await authFetch(`/documents/${documentId}/note`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to delete document note (${res.status})`);
+  }
+}
+
+// Migration
+export async function migrateLocalStorageData(
+  documentId: number,
+  payload: {
+    folders?: any[];
+    folderMap?: Record<string, string>;
+    duplicatedChunks?: any[];
+    smartNotes?: any[];
+    documentNote?: any;
+  }
+): Promise<{ ok: boolean; imported: any; message: string }> {
+  const res = await authFetch(`/documents/${documentId}/migrate-localstorage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ documentId, ...payload }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to migrate data (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; imported: any; message: string };
 }
 
 // Search API

@@ -16,14 +16,17 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
 
   useEffect(() => {
     if (!open) return;
-    const f = loadFolders(docId);
-    setFolders(f);
+    const load = async () => {
+      const f = await loadFolders(docId);
+      setFolders(f);
+    };
+    load();
   }, [open, docId]);
 
   const canAdd = useMemo(() => name.trim().length >= 1, [name]);
 
-  function refresh() {
-    const f = loadFolders(docId);
+  async function refresh() {
+    const f = await loadFolders(docId);
     setFolders(f);
     onChanged?.(f);
   }
@@ -69,10 +72,10 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
             />
             <button
               disabled={!canAdd}
-              onClick={() => {
-                createFolder(docId, name);
+              onClick={async () => {
+                await createFolder(docId, name);
                 setName("");
-                refresh();
+                await refresh();
               }}
               style={{
                 padding: "12px 20px",
@@ -141,11 +144,11 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
                   </svg>
                   <input
                     defaultValue={f.name}
-                    onBlur={(e) => {
+                    onBlur={async (e) => {
                       const v = e.target.value.trim();
                       if (!v || v === f.name) return;
-                      renameFolder(docId, f.id, v);
-                      refresh();
+                      await renameFolder(docId, f.id, v);
+                      await refresh();
                     }}
                     className="flex-1 bg-transparent border-none outline-none text-primary font-medium"
                     style={{
@@ -159,11 +162,11 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
                   />
                 </div>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     const ok = window.confirm(`Delete folder "${f.name}"? (will unassign segments)`);
                     if (!ok) return;
-                    deleteFolder(docId, f.id);
-                    refresh();
+                    await deleteFolder(docId, f.id);
+                    await refresh();
                   }}
                   className="btn-danger p-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors opacity-0 group-hover:opacity-100"
                   style={{ padding: "8px 10px" }}

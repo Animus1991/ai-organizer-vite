@@ -7,7 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Optional, List
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status, Query
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -63,6 +63,13 @@ class UploadListItem(BaseModel):
     # ✅ useful for list badges (optional but helpful)
     parseStatus: str
     parseError: Optional[str] = None
+
+
+class PaginatedUploadsResponse(BaseModel):
+    items: List[UploadListItem]
+    total: int
+    page: int
+    pageSize: int
 
 
 # -----------------------------
@@ -178,13 +185,26 @@ def _fail_doc_fields(ext: str) -> tuple[str, str]:
 # -----------------------------
 # Routes
 # -----------------------------
-@router.get("/uploads", response_model=List[UploadListItem])
+@router.get("/uploads", response_model=PaginatedUploadsResponse)
 def list_uploads(
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    pageSize: int = Query(default=50, ge=1, le=1000, description="Items per page (max 1000)"),
     user: User = Depends(get_current_user),
 ):
     with Session(engine) as session:
+        # Get total count
+        total_stmt = select(Upload).where(Upload.user_id == user.id)
+        total_uploads = session.exec(total_stmt).all()
+        total = len([up for up in total_uploads if session.exec(select(Document).where(Document.upload_id == up.id)).first()])
+        
+        # Get paginated uploads
+        offset = (page - 1) * pageSize
         uploads = session.exec(
-            select(Upload).where(Upload.user_id == user.id).order_by(Upload.id.desc())
+            select(Upload)
+            .where(Upload.user_id == user.id)
+            .order_by(Upload.id.desc())
+            .offset(offset)
+            .limit(pageSize)
         ).all()
 
         out: list[UploadListItem] = []
@@ -203,7 +223,13 @@ def list_uploads(
                     parseError=getattr(doc, "parse_error", None),
                 )
             )
-        return out
+        
+        return PaginatedUploadsResponse(
+            items=out,
+            total=total,
+            page=page,
+            pageSize=pageSize
+        )
 
 
 @router.post("/upload", response_model=UploadOut)

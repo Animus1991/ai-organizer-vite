@@ -29,6 +29,15 @@ class User(SQLModel, table=True):
         back_populates="user",
         sa_relationship_kwargs={"cascade": "all, delete-orphan"},
     )
+    folders: list["Folder"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    smart_notes: list["SmartNote"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    document_notes: list["DocumentNote"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
 
 
 class Upload(SQLModel, table=True):
@@ -80,6 +89,15 @@ class Document(SQLModel, table=True):
             "order_by": "Segment.order_index",
         },
     )
+    folders: list["Folder"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    smart_notes: list["SmartNote"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+    document_note: Optional["DocumentNote"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "uselist": False},
+    )
 
 
 class Segment(SQLModel, table=True):
@@ -124,3 +142,102 @@ class RefreshToken(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
     user: Optional["User"] = Relationship(back_populates="refresh_tokens")
+
+
+# ============================================================================
+# User Workspace Models (Folders, Notes, etc.)
+# ============================================================================
+
+class Folder(SQLModel, table=True):
+    """User-created folders for organizing segments/chunks within a document"""
+    __tablename__ = "folders"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(foreign_key="users.id", index=True)
+    document_id: int = Field(foreign_key="documents.id", index=True)
+
+    name: str
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+
+    user: Optional["User"] = Relationship()
+    document: Optional["Document"] = Relationship()
+
+    items: list["FolderItem"] = Relationship(
+        back_populates="folder",
+        sa_relationship_kwargs={"cascade": "all, delete-orphan"},
+    )
+
+
+class FolderItem(SQLModel, table=True):
+    """Items (segments or duplicated chunks) within a folder"""
+    __tablename__ = "folder_items"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    folder_id: int = Field(foreign_key="folders.id", index=True)
+    
+    # Either segment_id OR chunk_id is set (not both)
+    # segment_id: reference to original Segment
+    segment_id: Optional[int] = Field(foreign_key="segments.id", default=None, index=True)
+    
+    # chunk_id: UUID string for duplicated chunks (stored as string, not FK)
+    chunk_id: Optional[str] = Field(default=None, index=True)
+    
+    # Metadata for duplicated chunks (if chunk_id is set)
+    chunk_title: Optional[str] = Field(default=None)
+    chunk_content: Optional[str] = Field(default=None)
+    chunk_mode: Optional[str] = Field(default=None)
+    chunk_is_manual: Optional[bool] = Field(default=None)
+    chunk_order_index: Optional[int] = Field(default=None)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+
+    folder: Optional["Folder"] = Relationship(back_populates="items")
+    segment: Optional["Segment"] = Relationship()
+
+
+class SmartNote(SQLModel, table=True):
+    """User-created smart notes with tags and categories"""
+    __tablename__ = "smart_notes"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(foreign_key="users.id", index=True)
+    document_id: int = Field(foreign_key="documents.id", index=True)
+    
+    content: str  # Plain text content
+    html: str  # HTML formatted content
+    
+    tags: str = Field(default="[]")  # JSON array of tag strings
+    category: str = Field(default="General")
+    priority: str = Field(default="medium")  # "low" | "medium" | "high"
+    
+    # Optional link to specific segment/chunk
+    chunk_id: Optional[int] = Field(foreign_key="segments.id", default=None, index=True)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+
+    user: Optional["User"] = Relationship()
+    document: Optional["Document"] = Relationship()
+    chunk: Optional["Segment"] = Relationship()
+
+
+class DocumentNote(SQLModel, table=True):
+    """User notes/annotations for a document (HTML formatted)"""
+    __tablename__ = "document_notes"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    user_id: int = Field(foreign_key="users.id", index=True)
+    document_id: int = Field(foreign_key="documents.id", index=True, unique=True)
+
+    html: str  # HTML formatted notes
+    text: str  # Plain text version
+
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+
+    user: Optional["User"] = Relationship()
+    document: Optional["Document"] = Relationship()

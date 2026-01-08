@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { FolderDTO } from "../lib/segmentFolders";
-import { duplicateSegment, loadDuplicatedChunks, deleteDuplicatedChunk, DuplicatedChunk } from "../lib/chunkDuplication";
+import { loadDuplicatedChunks, deleteDuplicatedChunk, DuplicatedChunk } from "../lib/chunkDuplication";
+import { getFolder as apiGetFolder } from "../lib/api";
 
 interface FolderViewProps {
   docId: number;
@@ -13,14 +14,60 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [folderItems, setFolderItems] = useState<string[]>([]); // chunk IDs from API
 
-  const duplicatedChunks = loadDuplicatedChunks(docId);
+  // Load folder items from API (database-first)
+  useEffect(() => {
+    const loadItems = async () => {
+      try {
+        const folderWithItems = await apiGetFolder(parseInt(folder.id, 10));
+        // Extract chunk IDs from folder items
+        const chunkIds = folderWithItems.items
+          .filter(item => item.chunkId)
+          .map(item => item.chunkId!)
+          .filter(Boolean);
+        setFolderItems(chunkIds);
+      } catch (error) {
+        console.error("Failed to load folder items:", error);
+        // Fallback: try to get from folder.contents if available
+        if (folder.contents && Array.isArray(folder.contents)) {
+          setFolderItems(folder.contents.filter(Boolean));
+        } else {
+          setFolderItems([]);
+        }
+      }
+    };
+    loadItems();
+  }, [docId, folder.id, refreshKey]);
+
+  // Also listen for storage events to update when folder changes from other tabs/components
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === `aiorg_seg_folders_doc_${docId}` || e.key === `aiorg_duplicated_chunks_doc_${docId}`) {
+        setRefreshKey(prev => prev + 1);
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, [docId]);
+
+  // Load fresh data from API
+  const currentFolder = useMemo(() => {
+    // Use the folder prop as base, but items come from API state
+    return folder;
+  }, [folder]);
+
+  const duplicatedChunks = useMemo(() => {
+    return loadDuplicatedChunks(docId);
+  }, [docId, refreshKey]);
   
-  // Ensure folder and folder.contents exist and is an array
-  const folderContents = (folder && Array.isArray(folder.contents)) ? folder.contents : [];
-  const folderChunks = Array.isArray(duplicatedChunks) ? duplicatedChunks.filter(chunk => 
-    chunk && chunk.documentId === docId && Array.isArray(folderContents) && folderContents.includes(chunk.id)
-  ) : [];
+  // Filter chunks that are in this folder (from API)
+  const folderChunks = useMemo(() => {
+    return Array.isArray(duplicatedChunks) ? duplicatedChunks.filter(chunk => 
+      chunk && chunk.documentId === docId && folderItems.includes(chunk.id)
+    ) : [];
+  }, [duplicatedChunks, docId, folderItems]);
 
   const handleEditTitle = (chunkId: string, currentTitle: string) => {
     setEditingId(chunkId);
@@ -37,6 +84,7 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
     
     setEditingId(null);
     setEditingTitle("");
+    setRefreshKey(prev => prev + 1); // Force refresh
     onChunkUpdated();
   };
 
@@ -47,6 +95,7 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
   const confirmDeleteChunk = (chunkId: string) => {
     deleteDuplicatedChunk(docId, chunkId);
     setDeletingId(null);
+    setRefreshKey(prev => prev + 1); // Force refresh
     onChunkUpdated();
   };
 
@@ -60,7 +109,7 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
         <button onClick={onBack} style={{ padding: "6px 12px", fontSize: 12 }}>
           ← Back
         </button>
-        <h3 style={{ margin: 0, fontSize: 16 }}>📁 {folder?.name || "Unknown Folder"}</h3>
+        <h3 style={{ margin: 0, fontSize: 16 }}>📁 {currentFolder?.name || folder?.name || "Unknown Folder"}</h3>
         <span style={{ fontSize: 12, opacity: 0.7 }}>
           ({folderChunks.length} chunks)
         </span>
@@ -119,107 +168,58 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
                     {chunk.title}
                   </h4>
                 )}
-                
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <div style={{ display: "flex", gap: 8 }}>
                   {deletingId === chunk.id ? (
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <span style={{ fontSize: 11, opacity: 0.7 }}>Delete?</span>
+                    <>
                       <button
                         onClick={() => confirmDeleteChunk(chunk.id)}
                         style={{
-                          padding: "3px 8px",
-                          fontSize: 11,
-                          background: "rgba(239, 68, 68, 0.2)",
-                          border: "1px solid rgba(239, 68, 68, 0.4)",
-                          color: "#ef4444",
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          background: "#ef4444",
+                          color: "white",
+                          border: "none",
                           borderRadius: 4,
                           cursor: "pointer",
-                          transition: "all 0.2s",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = "rgba(239, 68, 68, 0.3)";
-                          e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.6)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
-                          e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.4)";
                         }}
                       >
-                        ✓
+                        Confirm
                       </button>
                       <button
                         onClick={cancelDelete}
                         style={{
-                          padding: "3px 8px",
-                          fontSize: 11,
-                          background: "rgba(255, 255, 255, 0.1)",
-                          border: "1px solid rgba(255, 255, 255, 0.2)",
+                          padding: "4px 8px",
+                          fontSize: 12,
+                          background: "rgba(255,255,255,0.1)",
                           color: "#eaeaea",
+                          border: "none",
                           borderRadius: 4,
                           cursor: "pointer",
-                          transition: "all 0.2s",
-                        }}
-                        onMouseEnter={(e) => {
-                          e.currentTarget.style.background = "rgba(255, 255, 255, 0.15)";
-                          e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.3)";
-                        }}
-                        onMouseLeave={(e) => {
-                          e.currentTarget.style.background = "rgba(255, 255, 255, 0.1)";
-                          e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.2)";
                         }}
                       >
-                        ✕
+                        Cancel
                       </button>
-                    </div>
+                    </>
                   ) : (
                     <button
                       onClick={() => handleDeleteChunk(chunk.id)}
                       style={{
-                        padding: "4px 10px",
-                        fontSize: 11,
-                        background: "rgba(239, 68, 68, 0.1)",
-                        border: "1px solid rgba(239, 68, 68, 0.2)",
+                        padding: "4px 8px",
+                        fontSize: 12,
+                        background: "rgba(239, 68, 68, 0.2)",
                         color: "#ef4444",
-                        borderRadius: 6,
+                        border: "1px solid rgba(239, 68, 68, 0.3)",
+                        borderRadius: 4,
                         cursor: "pointer",
-                        transition: "all 0.2s",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 4,
                       }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)";
-                        e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.3)";
-                        e.currentTarget.style.transform = "scale(1.05)";
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.background = "rgba(239, 68, 68, 0.1)";
-                        e.currentTarget.style.borderColor = "rgba(239, 68, 68, 0.2)";
-                        e.currentTarget.style.transform = "scale(1)";
-                      }}
-                      title="Delete chunk"
                     >
-                      🗑️ Delete
+                      Delete
                     </button>
                   )}
                 </div>
               </div>
-              
-              <div style={{ 
-                fontSize: 12, 
-                opacity: 0.8, 
-                lineHeight: 1.4,
-                maxHeight: 60,
-                overflow: "hidden"
-              }}>
-                {chunk.content.length > 150 
-                  ? chunk.content.slice(0, 150) + "..." 
-                  : chunk.content
-                }
-              </div>
-              
-              <div style={{ fontSize: 11, opacity: 0.6, marginTop: 8 }}>
-                Original: #{chunk.originalId} • {chunk.isManual ? "Manual" : "Auto"} • {chunk.mode}
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                {chunk.content?.slice(0, 100)}...
               </div>
             </div>
           ))}
@@ -228,4 +228,3 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
     </div>
   );
 }
-

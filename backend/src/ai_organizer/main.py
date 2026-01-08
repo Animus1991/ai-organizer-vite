@@ -62,16 +62,27 @@ def on_startup() -> None:
     # Run `alembic upgrade head` before starting the server
     from ai_organizer.core.db import DB_URL, engine
     from pathlib import Path
+    import logging
+    
+    logger = logging.getLogger(__name__)
     
     if DB_URL.startswith("sqlite"):
         db_path_str = DB_URL.replace("sqlite:///", "")
-        db_path = Path(db_path_str)
+        db_path = Path(db_path_str).resolve()  # Ensure absolute path
+        
+        # Ensure parent directory exists
         db_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Log database location for debugging
+        logger.info(f"Database path: {db_path}")
+        logger.info(f"Database path is absolute: {db_path.is_absolute()}")
+        logger.info(f"Database file exists: {db_path.exists()}")
+        
+        if db_path.exists():
+            logger.info(f"Database file size: {db_path.stat().st_size} bytes")
         
         # Verify database file exists (should be created by Alembic migrations)
         if not db_path.exists():
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(
                 f"Database file not found at {db_path}. "
                 "Run 'alembic upgrade head' to create the database schema."
@@ -83,9 +94,20 @@ def on_startup() -> None:
             # Test query to ensure database is accessible
             from sqlalchemy import text
             conn.execute(text("SELECT 1"))
+            
+            # Check if users table exists and has data
+            try:
+                result = conn.execute(text("SELECT COUNT(*) FROM users"))
+                user_count = result.scalar()
+                logger.info(f"Database connection successful. Users in database: {user_count}")
+            except Exception as e:
+                logger.warning(f"Could not check users table: {e}")
+        
         print(f"✅ Database initialized successfully at: {DB_URL}")
-        print(f"   Database file exists: {Path(DB_URL.replace('sqlite:///', '')).exists()}")
+        print(f"   Database file: {Path(DB_URL.replace('sqlite:///', '')).resolve()}")
+        print(f"   Database file exists: {Path(DB_URL.replace('sqlite:///', '')).resolve().exists()}")
     except Exception as e:
+        logger.error(f"Database initialization failed: {e}", exc_info=True)
         print(f"⚠️  Database initialization warning: {e}")
         # Continue anyway - tables might still be created
 

@@ -7,6 +7,7 @@ from ai_organizer.api.routes.segment import router as segment_router
 from ai_organizer.api.routes.upload_delete import router as upload_delete_router
 from ai_organizer.api.routes.documents import router as documents_router  # ✅ add
 from ai_organizer.api.routes.search import router as search_router
+from ai_organizer.api.routes.workspace import router as workspace_router
 
 api_router = APIRouter()
 
@@ -30,3 +31,6 @@ api_router.include_router(documents_router, tags=["documents"])
 
 # ✅ /api/search
 api_router.include_router(search_router, tags=["search"])
+
+# ✅ /api/folders, /api/smart-notes, /api/documents/{id}/note, /api/documents/{id}/migrate-localstorage
+api_router.include_router(workspace_router, tags=["workspace"])

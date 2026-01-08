@@ -1,3 +1,13 @@
+/**
+ * Duplicated Chunks Management
+ * 
+ * Architecture:
+ * - Duplicated chunks are stored in localStorage (temporary workspace copies)
+ * - When added to folders, they are stored in database via folder_items API
+ * - This allows users to create temporary copies without cluttering the database
+ * - Only chunks in folders are persisted to database
+ */
+
 import { SegmentDTO } from "./api";
 
 export type DuplicatedChunk = {
@@ -23,7 +33,7 @@ export type RecycledChunk = {
   documentId: number; // Document this belongs to
 };
 
-// Storage keys
+// Storage keys (localStorage only - these are temporary workspace copies)
 function keyDuplicatedChunks(docId: number) {
   return `aiorg_duplicated_chunks_doc_${docId}`;
 }
@@ -53,7 +63,10 @@ function generateUniqueTitle(baseTitle: string, existingTitles: string[]): strin
   return newTitle;
 }
 
-// Load duplicated chunks
+/**
+ * Load duplicated chunks from localStorage
+ * These are temporary workspace copies - not persisted to database
+ */
 export function loadDuplicatedChunks(docId: number): DuplicatedChunk[] {
   try {
     const raw = localStorage.getItem(keyDuplicatedChunks(docId));
@@ -64,12 +77,19 @@ export function loadDuplicatedChunks(docId: number): DuplicatedChunk[] {
   }
 }
 
-// Save duplicated chunks
+/**
+ * Save duplicated chunks to localStorage
+ * These are temporary workspace copies - not persisted to database
+ * When added to folders, they are stored in database via folder_items API
+ */
 export function saveDuplicatedChunks(docId: number, chunks: DuplicatedChunk[]) {
   localStorage.setItem(keyDuplicatedChunks(docId), JSON.stringify(chunks));
 }
 
-// Create duplicate of a segment
+/**
+ * Create duplicate of a segment (localStorage only - temporary workspace copy)
+ * When added to folder, it will be persisted to database via folder_items API
+ */
 export function duplicateSegment(segment: SegmentDTO, docId: number): DuplicatedChunk {
   const existingChunks = loadDuplicatedChunks(docId);
   const existingTitles = existingChunks.map(c => c.title);
@@ -94,7 +114,9 @@ export function duplicateSegment(segment: SegmentDTO, docId: number): Duplicated
   return duplicate;
 }
 
-// Load recycled chunks
+/**
+ * Load recycled chunks from localStorage
+ */
 export function loadRecycledChunks(docId: number): RecycledChunk[] {
   try {
     const raw = localStorage.getItem(keyRecycledChunks(docId));
@@ -105,12 +127,17 @@ export function loadRecycledChunks(docId: number): RecycledChunk[] {
   }
 }
 
-// Save recycled chunks
+/**
+ * Save recycled chunks to localStorage
+ */
 export function saveRecycledChunks(docId: number, chunks: RecycledChunk[]) {
   localStorage.setItem(keyRecycledChunks(docId), JSON.stringify(chunks));
 }
 
-// Delete a duplicated chunk (move to recycle bin)
+/**
+ * Delete a duplicated chunk (move to recycle bin)
+ * Note: If chunk is in a folder, it should be removed from folder first via API
+ */
 export function deleteDuplicatedChunk(docId: number, chunkId: string) {
   const chunks = loadDuplicatedChunks(docId);
   const chunkToDelete = chunks.find(c => c.id === chunkId);
@@ -138,7 +165,9 @@ export function deleteDuplicatedChunk(docId: number, chunkId: string) {
   }
 }
 
-// Restore a chunk from recycle bin
+/**
+ * Restore a chunk from recycle bin
+ */
 export function restoreChunk(docId: number, recycledId: string) {
   const recycledChunks = loadRecycledChunks(docId);
   const chunkToRestore = recycledChunks.find(c => c.id === recycledId);
@@ -167,14 +196,18 @@ export function restoreChunk(docId: number, recycledId: string) {
   }
 }
 
-// Permanently delete a chunk from recycle bin
+/**
+ * Permanently delete a chunk from recycle bin
+ */
 export function permanentlyDeleteChunk(docId: number, recycledId: string) {
   const recycledChunks = loadRecycledChunks(docId);
   const updatedRecycled = recycledChunks.filter(c => c.id !== recycledId);
   saveRecycledChunks(docId, updatedRecycled);
 }
 
-// Auto-cleanup expired chunks (older than 30 days)
+/**
+ * Auto-cleanup expired chunks (older than 30 days)
+ */
 export function cleanupExpiredChunks(docId: number) {
   const recycledChunks = loadRecycledChunks(docId);
   const now = Date.now();

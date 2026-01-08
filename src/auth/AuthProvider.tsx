@@ -58,9 +58,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function refreshMe() {
     // ✅ Load user info from backend if token exists
-    if (!getAccessToken()) {
-      setUser(null);
-      return;
+    // If access token is missing but refresh token exists, try to refresh first
+    let accessToken = getAccessToken();
+    
+    if (!accessToken) {
+      const refreshToken = getRefreshToken();
+      if (refreshToken) {
+        // Try to refresh tokens
+        try {
+          const { refreshTokens } = await import("../lib/api");
+          const newAccess = await refreshTokens();
+          if (newAccess) {
+            accessToken = newAccess;
+          } else {
+            setUser(null);
+            return;
+          }
+        } catch {
+          setUser(null);
+          return;
+        }
+      } else {
+        setUser(null);
+        return;
+      }
     }
     
     try {
@@ -71,8 +92,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
       }
     } catch (error) {
-      // If /me fails, clear user (token might be invalid)
-      setUser(null);
+      // If /me fails, try refreshing tokens once more before giving up
+      const refreshToken = getRefreshToken();
+      if (refreshToken) {
+        try {
+          const { refreshTokens } = await import("../lib/api");
+          const newAccess = await refreshTokens();
+          if (newAccess) {
+            // Retry /me after refresh
+            const userData = await apiMe();
+            if (userData?.email) {
+              setUser({ email: userData.email });
+            } else {
+              setUser(null);
+            }
+          } else {
+            setUser(null);
+          }
+        } catch {
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
     }
   }
 
@@ -81,6 +123,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const refreshToken = getRefreshToken();
       await apiLogout(refreshToken).catch(() => {});
+      
+      // Clear user-specific localStorage data
+      try {
+        const { getCurrentUserId, clearUserData } = await import("../lib/localStorageKeys");
+        const userId = getCurrentUserId();
+        if (userId) {
+          clearUserData(userId);
+        }
+      } catch {
+        // Ignore errors in cleanup
+      }
     } finally {
       clearTokens();
       setUser(null);
@@ -90,11 +143,59 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // ✅ Load user info from backend on mount if token exists
-    if (getAccessToken()) {
-      refreshMe();
-    } else {
-      setUser(null);
-    }
+    // Also try to refresh tokens if refresh token exists but access token is missing
+    const loadUser = async () => {
+      const accessToken = getAccessToken();
+      const refreshToken = getRefreshToken();
+      
+      if (accessToken) {
+        await refreshMe();
+      } else if (refreshToken) {
+        // Try to refresh tokens first, then load user
+        try {
+          const { refreshTokens } = await import("../lib/api");
+          const newAccess = await refreshTokens();
+          if (newAccess) {
+            await refreshMe();
+          } else {
+            setUser(null);
+          }
+        } catch {
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+    };
+    
+    loadUser();
+    
+    // Set up periodic token refresh (every 5 minutes) to keep session alive
+    const refreshInterval = setInterval(async () => {
+      const refreshToken = getRefreshToken();
+      if (refreshToken && !getAccessToken()) {
+        // Access token expired, try to refresh
+        try {
+          const { refreshTokens } = await import("../lib/api");
+          const newAccess = await refreshTokens();
+          if (newAccess) {
+            await refreshMe();
+          } else {
+            // Refresh failed, clear user
+            setUser(null);
+          }
+        } catch {
+          setUser(null);
+        }
+      } else if (refreshToken) {
+        // Access token exists, just verify user is still logged in
+        await refreshMe();
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+    
+    return () => {
+      clearInterval(refreshInterval);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

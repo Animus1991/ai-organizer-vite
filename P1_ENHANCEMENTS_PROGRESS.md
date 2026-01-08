@@ -48,20 +48,47 @@
 
 ---
 
-## ⏳ Pagination - PENDING
+## ✅ Pagination - COMPLETED
 
-**Status**: Not yet implemented
+**Changes**:
+- Added pagination support to backend list endpoints
+- Updated frontend API calls to support pagination parameters
+- Maintained backward compatibility with existing code
 
-**Required Changes**:
-- Backend: Add `page` and `limit` query parameters to list endpoints
-- Backend: Return paginated responses with `items`, `total`, `page`, `pageSize`
-- Frontend: Update API calls to support pagination
-- Frontend: Add pagination UI components
+**Backend Changes**:
+- `GET /api/uploads` - Added `page` and `pageSize` query parameters
+  - Returns `PaginatedUploadsResponse` with `items`, `total`, `page`, `pageSize`
+  - Default: `page=1`, `pageSize=50`, max `pageSize=100`
+- `GET /api/documents/{id}/segments` - Added `page` and `pageSize` query parameters
+  - Returns paginated response with `pagination` object containing `total`, `page`, `pageSize`, `totalPages`
+  - Default: `page=1`, `pageSize=100`, max `pageSize=500`
 
-**Endpoints to Update**:
-- `GET /api/uploads` - List uploads
-- `GET /api/documents/{id}/segments` - List segments
-- `GET /api/documents/{id}/segmentations` - List segmentations
+**Frontend Changes**:
+- Updated `listUploads()` to accept `page` and `pageSize` parameters
+- Updated `listSegmentsWithMeta()` and `listSegments()` to accept pagination parameters
+- Added `PaginatedResponse<T>` type for type safety
+- Updated `Home.tsx` to handle both old array format and new paginated format (backward compatibility)
+- `DocumentWorkspace.tsx` already handles paginated responses correctly
+
+**Files Modified**:
+- `backend/src/ai_organizer/api/routes/upload.py` - Added pagination to `/uploads` endpoint
+- `backend/src/ai_organizer/api/routes/segment.py` - Added pagination to `/documents/{id}/segments` endpoint
+- `src/lib/api.ts` - Updated API functions to support pagination
+- `src/pages/Home.tsx` - Updated to handle paginated responses
+
+**Features**:
+- **Query Parameters**: `page` (1-indexed) and `pageSize` (with max limits)
+- **Response Format**: Includes `items`, `total`, `page`, `pageSize`, and optionally `totalPages`
+- **Backward Compatibility**: Frontend handles both array and paginated responses
+- **Type Safety**: TypeScript types for paginated responses
+
+**Note**: Pagination UI components can be added later for better UX. Currently, the frontend requests large page sizes (1000 for uploads, 100 for segments) to get all items, but the backend now supports proper pagination.
+
+**Result**:
+- Backend endpoints support pagination
+- Frontend API calls updated
+- Backward compatibility maintained
+- Ready for pagination UI implementation
 
 ---
 

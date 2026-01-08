@@ -267,6 +267,8 @@ def patch_segment(
 def list_segments(
     document_id: int,
     mode: SegmentMode | None = None,
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    pageSize: int = Query(default=100, ge=1, le=500, description="Items per page (max 500)"),
     user: User = Depends(get_current_user),
 ):
     if mode is not None and mode not in ALL_MODES:
@@ -292,11 +294,14 @@ def list_segments(
         else:
             stmt = stmt.order_by(Segment.mode.asc(), Segment.order_index.asc(), Segment.id.asc())
 
-        items = session.exec(stmt).all()
-
+        # Get total count
         meta_row = session.exec(meta_stmt).one()
-        count = int(_scalar(meta_row[0]) or 0)
+        total = int(_scalar(meta_row[0]) or 0)
         last_run = meta_row[1]
+
+        # Apply pagination
+        offset = (page - 1) * pageSize
+        items = session.exec(stmt.offset(offset).limit(pageSize)).all()
 
         return {
             "items": [
@@ -314,9 +319,15 @@ def list_segments(
                 for s in items
             ],
             "meta": {
-                "count": count,
+                "count": total,
                 "mode": (mode.value if mode else "all"),
                 "lastRun": (last_run.isoformat() if last_run else None),  # ✅ camelCase for consistency
+            },
+            "pagination": {
+                "total": total,
+                "page": page,
+                "pageSize": pageSize,
+                "totalPages": (total + pageSize - 1) // pageSize if total > 0 else 0,
             },
         }
 

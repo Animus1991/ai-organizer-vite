@@ -63,3 +63,9 @@ settings = Settings()
 settings.AIORG_DATA_DIR.mkdir(parents=True, exist_ok=True)
 settings.AIORG_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.AIORG_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+# Log database location for debugging persistence issues
+import logging
+logger = logging.getLogger(__name__)
+logger.info(f"Database URL: {settings.AIORG_DB_URL}")
+logger.info(f"Data directory: {settings.AIORG_DATA_DIR}")

@@ -1,51 +1,21 @@
 // src/pages/Home.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 import { useAuth } from "../auth/AuthProvider";
-import { ErrorBoundary } from "../components/ErrorBoundary";
-import {
-  listUploads,
-  listSegments,
-  segmentDocument,
-  listSegmentations,
-  deleteUpload,
-  UploadItemDTO,
-  UploadResponseDTO,
-} from "../lib/api";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import SegmentationSummaryBar from "../components/SegmentationSummaryBar";
 import { useLoading } from "../hooks/useLoading";
 import { useFileUpload } from "../hooks/useFileUpload";
-import { FileUploadProgress } from "../components/ui/ProgressBar";
 import { validateFile } from "../lib/validation";
 import SearchModal from "../components/SearchModal";
+import { HomeHeader } from "../components/home";
 import { SearchResultItem } from "../lib/api";
-import { BatchOperations } from "../components/BatchOperations";
-import { useBatchOperations } from "../hooks/useBatchOperations";
-
-type SegmentRow = {
-  id: number;
-  orderIndex: number;
-  mode: string;
-  title: string;
-  content: string;
-  start?: number;
-  end?: number;
-  createdAt?: string | null;
-};
-
-type SegSummaryRow = {
-  mode: "qa" | "paragraphs";
-  count: number;
-  lastSegmentedAt?: string | null;
-};
+import { apiCache } from "../lib/cache";
+import { useHomeState } from "../hooks/home";
+import { useHomeOperations } from "../hooks/home/useHomeOperations";
 
 function preview120(s: string) {
   const oneLine = (s ?? "").replace(/\s+/g, " ").trim();
   return oneLine.length > 120 ? oneLine.slice(0, 120) + "…" : oneLine;
-}
-
-function safeFileName(name: string) {
-  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, "_").slice(0, 120).trim() || "export";
 }
 
 function formatBytes(bytes: number): string {
@@ -66,59 +36,95 @@ function statusBadge(parseStatus?: string) {
 export default function Home() {
   const { user, logout } = useAuth();
   const nav = useNavigate();
-  const [searchOpen, setSearchOpen] = useState(false);
+  const location = useLocation();
 
   const { loading: uploadsLoading } = useLoading();
   const { loading: deleteLoading } = useLoading();
   const { uploading, progress, upload: uploadWithProgress, reset: resetUpload, error: uploadError } = useFileUpload();
 
-  const [segSummary, setSegSummary] = useState<SegSummaryRow[]>([]);
+  const { execute: executeFetch } = useLoading();
+  
+  // Simple setLoading wrapper for useHomeOperations (not used in Home.tsx but required by hook)
+  const setLoading = (_key: string, _loading: boolean) => {
+    // This is a no-op in Home.tsx since we use separate useLoading hooks
+    // The hook signature requires it, but we don't actually use it
+  };
 
-  const [file, setFile] = useState<File | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const [documentId, setDocumentId] = useState<number | null>(null);
-  const [mode, setMode] = useState<"qa" | "paragraphs">("qa");
+  // All state managed by useHomeState hook
+  const state = useHomeState();
+  
+  // Destructure state for easier access
+  const {
+    searchOpen,
+    setSearchOpen,
+    hasFetchedRef,
+    setSegSummary,
+    file,
+    setFile,
+    fileError,
+    setFileError,
+    documentId,
+    setDocumentId,
+    mode,
+    setMode,
+    segments,
+    setSegments,
+    status,
+    uploads,
+    openSeg,
+    setOpenSeg,
+    copied,
+    query,
+    setQuery,
+    modeFilter,
+    setModeFilter,
+    selectedUpload,
+    localDuplicateHint,
+    canSegment,
+    filteredSegments,
+    segSummaryByMode,
+  } = state;
 
-  const [segments, setSegments] = useState<SegmentRow[]>([]);
-  const [status, setStatus] = useState<string>("");
-
-  const [uploads, setUploads] = useState<UploadItemDTO[]>([]);
-
-  // side panel state
-  const [openSeg, setOpenSeg] = useState<SegmentRow | null>(null);
-  const [copied, setCopied] = useState(false);
-
-  // QoL state
-  const [query, setQuery] = useState("");
-  const [modeFilter, setModeFilter] = useState<"all" | "qa" | "paragraphs">("all");
-
-  const { loading: fetchLoading, execute: executeFetch } = useLoading();
-
-  async function fetchUploads() {
-    const data = await executeFetch(async () => {
-      return await listUploads();
-    });
-    
-    if (data) {
-      setUploads(Array.isArray(data) ? data : []);
-    } else {
-      setStatus("Failed to load uploads");
-    }
-  }
-
-  async function loadSegmentationSummary(docId: number) {
-    try {
-      const rows = await listSegmentations(docId);
-      setSegSummary(Array.isArray(rows) ? (rows as SegSummaryRow[]) : []);
-    } catch {
-      setSegSummary([]);
-    }
-  }
+  // All operations managed by useHomeOperations hook
+  const ops = useHomeOperations(
+    state,
+    setLoading,
+    uploadWithProgress,
+    resetUpload,
+    uploadError,
+    executeFetch
+  );
+  
+  // Destructure operations for easier access
+  const {
+    fetchUploads,
+    loadSegmentationSummary,
+    doUpload,
+    segmentDoc,
+    loadSegments,
+    deleteSelectedUpload,
+    copyOpenSegment,
+    exportOpenSegmentTxt,
+  } = ops;
 
   useEffect(() => {
-    if (user) fetchUploads();
+    if (user) {
+      fetchUploads();
+      hasFetchedRef.current = true;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
+
+  // Fetch uploads when returning to the Home page (location change)
+  useEffect(() => {
+    if (user && location.pathname === '/' && hasFetchedRef.current) {
+      // Clear cache to ensure fresh data when returning to page
+      const baseCacheKey = 'cache:http://127.0.0.1:8000/api/uploads';
+      apiCache.deleteByPrefix(baseCacheKey);
+      fetchUploads();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname, user]);
 
   useEffect(() => {
     if (documentId) loadSegmentationSummary(documentId);
@@ -126,180 +132,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId]);
 
-  const selectedUpload = useMemo(() => {
-    if (!documentId) return null;
-    return uploads.find((u) => u.documentId === documentId) ?? null;
-  }, [documentId, uploads]);
 
-  const localDuplicateHint = useMemo(() => {
-    if (!file) return null;
-    const hit = uploads.find((u) => u.filename === file.name && u.sizeBytes === file.size);
-    return hit ?? null;
-  }, [file, uploads]);
-
-  const canSegment = useMemo(() => {
-    if (!selectedUpload) return false;
-    return selectedUpload.parseStatus === "ok";
-  }, [selectedUpload]);
-
-  const filteredSegments = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return segments.filter((s) => {
-      const modeOk = modeFilter === "all" ? true : s.mode === modeFilter;
-      if (!modeOk) return false;
-      if (!q) return true;
-      const hay = `${s.title ?? ""} ${s.content ?? ""}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [segments, query, modeFilter]);
-
-  async function doUpload() {
-    if (!file) return;
-
-    setStatus("Uploading...");
-    setOpenSeg(null);
-
-    try {
-      const data = await uploadWithProgress(file) as UploadResponseDTO;
-      
-      // Reset upload state after a short delay to show completion
-      setTimeout(() => {
-        resetUpload();
-      }, 1000);
-
-      if (data.parseStatus === "failed") {
-        setStatus(
-          `Uploaded, but parse FAILED (${data.filename}). Reason: ${data.parseError ?? "unknown error"}`
-        );
-      } else if (data.deduped) {
-        setStatus(
-          `File deduped: ${data.filename}. Existing document used.`
-        );
-      } else {
-        setStatus(`Uploaded: ${data.filename}`);
-      }
-
-      setDocumentId(data.documentId || null);
-      await fetchUploads();
-    } catch (e: any) {
-      setStatus(e?.message ?? uploadError ?? "Upload failed");
-      resetUpload();
-    }
-  }
-
-  function extractCount(payload: any): number | null {
-    if (!payload) return null;
-    if (typeof payload.count === "number") return payload.count;
-    if (typeof payload.inserted === "number") return payload.inserted;
-    if (typeof payload.created === "number") return payload.created;
-    if (typeof payload.segments_created === "number") return payload.segments_created;
-    if (typeof payload.total === "number") return payload.total;
-    if (Array.isArray(payload)) return payload.length;
-    if (Array.isArray(payload.items)) return payload.items.length;
-    if (typeof payload.segments === "number") return payload.segments;
-    return null;
-  }
-
-  async function segmentDoc() {
-    if (!documentId) return;
-
-    if (!canSegment) {
-      setStatus(
-        `Cannot segment: document parseStatus is "${selectedUpload?.parseStatus}". Fix upload/parse first.`
-      );
-      return;
-    }
-
-    setStatus("Segmenting...");
-    setOpenSeg(null);
-
-    try {
-      const data = await segmentDocument(documentId, mode);
-      await loadSegmentationSummary(documentId);
-
-      const count = extractCount(data);
-      setStatus(
-        count !== null ? `Segmented: ${count} segments` : `Segment response: ${JSON.stringify(data)}`
-      );
-    } catch (e: any) {
-      setStatus(e?.message ?? "Segment failed");
-    }
-  }
-
-  async function loadSegments() {
-    if (!documentId) return;
-
-    setStatus("Loading segments...");
-    setOpenSeg(null);
-
-    try {
-      const response = await listSegments(documentId, mode);
-      const items = Array.isArray(response.items) ? response.items : [];
-      setModeFilter(mode);
-      setSegments(items);
-      setStatus(`Loaded ${items.length} segments`);
-    } catch (e: any) {
-      setStatus(e?.message ?? "List failed");
-    }
-  }
-
-  async function deleteSelectedUpload() {
-    if (!selectedUpload) return;
-
-    const ok = window.confirm(`Delete upload "${selectedUpload.filename}"?`);
-    if (!ok) return;
-
-    try {
-      await deleteUpload(selectedUpload.uploadId);
-      setQuery("");
-      setModeFilter("all");
-      await fetchUploads();
-    } catch (e: any) {
-      setStatus(e?.message ?? "Delete failed");
-    }
-  }
-
-  async function copyOpenSegment(withTitle: boolean) {
-    if (!openSeg) return;
-    const text = withTitle ? `${openSeg.title}\n\n${openSeg.content ?? ""}` : openSeg.content ?? "";
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 900);
-    } catch {
-      setStatus("Copy failed (clipboard blocked by browser).");
-    }
-  }
-
-  function exportOpenSegmentTxt() {
-    if (!openSeg) return;
-
-    const docLabel = selectedUpload?.filename
-      ? safeFileName(selectedUpload.filename)
-      : `doc_${documentId ?? "unknown"}`;
-    const segLabel = safeFileName(`${openSeg.orderIndex + 1}_${openSeg.title || "segment"}`);
-    const fileName = `${docLabel}__${segLabel}.txt`;
-
-    const content = `${openSeg.title}\n(mode: ${openSeg.mode}, order: ${
-      openSeg.orderIndex + 1
-    })\n\n${openSeg.content ?? ""}\n`;
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 300);
-  }
-
-  const segSummaryByMode = useMemo(() => {
-    const map: Record<string, SegSummaryRow> = {};
-    for (const row of segSummary) map[row.mode] = row;
-    return map;
-  }, [segSummary]);
 
   return (
     <div
@@ -313,167 +146,8 @@ export default function Home() {
       }}
     >
       {/* Header */}
-      <div
-        style={{
-          background: "linear-gradient(135deg, rgba(20, 20, 30, 0.95) 0%, rgba(15, 15, 25, 0.95) 100%)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255, 255, 255, 0.08)",
-          borderRadius: "20px",
-          padding: "32px 40px",
-          marginBottom: "40px",
-          boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "20px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "20px" }}>
-            <div
-              style={{
-                width: "64px",
-                height: "64px",
-                background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)",
-                borderRadius: "16px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                boxShadow: "0 8px 24px rgba(99, 102, 241, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1) inset",
-                transform: "translateY(0)",
-                transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
-                cursor: "pointer",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = "translateY(-2px) scale(1.05)";
-                e.currentTarget.style.boxShadow = "0 12px 32px rgba(99, 102, 241, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.1) inset";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = "translateY(0) scale(1)";
-                e.currentTarget.style.boxShadow = "0 8px 24px rgba(99, 102, 241, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.1) inset";
-              }}
-            >
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: "32px", height: "32px" }}>
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                />
-              </svg>
-            </div>
-            <div>
-              <h1
-                style={{
-                  fontSize: "var(--font-size-2xl)",
-                  lineHeight: "var(--line-height-snug)",
-                  letterSpacing: "var(--letter-spacing-tight)",
-                  fontWeight: 800,
-                  background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%)",
-                  WebkitBackgroundClip: "text",
-                  WebkitTextFillColor: "transparent",
-                  backgroundClip: "text",
-                  margin: 0,
-                  letterSpacing: "-0.5px",
-                }}
-              >
-                AI Organizer
-              </h1>
-              <p style={{ marginTop: "8px", fontSize: "16px", color: "rgba(255, 255, 255, 0.6)", fontWeight: 400 }}>
-                Document management and segmentation platform
-              </p>
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "16px", flexWrap: "wrap" }}>
-            <div
-              style={{
-                textAlign: "right",
-                background: "rgba(255, 255, 255, 0.03)",
-                padding: "12px 20px",
-                borderRadius: "12px",
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                backdropFilter: "blur(10px)",
-              }}
-            >
-              <p style={{ fontSize: "12px", color: "rgba(255, 255, 255, 0.5)", margin: 0, marginBottom: "4px" }}>Logged in as</p>
-              <p style={{ fontSize: "var(--font-size-base)", lineHeight: "var(--line-height-normal)", fontWeight: 600, color: "#eaeaea", margin: 0 }}>{user?.email}</p>
-            </div>
-            <button
-              onClick={logout}
-              style={{
-                padding: "12px 24px",
-                background: "rgba(255, 255, 255, 0.05)",
-                border: "1px solid rgba(255, 255, 255, 0.1)",
-                borderRadius: "12px",
-                color: "#eaeaea",
-                fontWeight: 500,
-                fontSize: "var(--font-size-base)",
-                lineHeight: "var(--line-height-normal)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                transition: "all 0.2s ease",
-                boxShadow: "0 2px 8px rgba(0, 0, 0, 0.2)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "rgba(255, 255, 255, 0.08)";
-                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.15)";
-                e.currentTarget.style.transform = "translateY(-1px)";
-                e.currentTarget.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.3)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(255, 255, 255, 0.05)";
-                e.currentTarget.style.borderColor = "rgba(255, 255, 255, 0.1)";
-                e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.2)";
-              }}
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: "16px", height: "16px" }}>
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-                />
-              </svg>
-              Logout
-            </button>
-            <button
-              onClick={() => setSearchOpen(true)}
-              style={{
-                padding: "10px 20px",
-                background: "linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%)",
-                border: "1px solid rgba(99, 102, 241, 0.3)",
-                borderRadius: "12px",
-                color: "#a5b4fc",
-                fontWeight: 500,
-                fontSize: "var(--font-size-base)",
-                lineHeight: "var(--line-height-normal)",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
-                transition: "all 0.2s ease",
-                boxShadow: "0 2px 8px rgba(99, 102, 241, 0.2)",
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "linear-gradient(135deg, rgba(99, 102, 241, 0.3) 0%, rgba(139, 92, 246, 0.3) 100%)";
-                e.currentTarget.style.borderColor = "rgba(99, 102, 241, 0.4)";
-                e.currentTarget.style.transform = "translateY(-1px)";
-                e.currentTarget.style.boxShadow = "0 4px 12px rgba(99, 102, 241, 0.3)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(139, 92, 246, 0.2) 100%)";
-                e.currentTarget.style.borderColor = "rgba(99, 102, 241, 0.3)";
-                e.currentTarget.style.transform = "translateY(0)";
-                e.currentTarget.style.boxShadow = "0 2px 8px rgba(99, 102, 241, 0.2)";
-              }}
-              title="Search (Ctrl+K)"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: "16px", height: "16px" }}>
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              Search
-            </button>
-          </div>
-        </div>
+      <div style={{ marginBottom: "40px" }}>
+        <HomeHeader user={user} onLogout={logout} onSearch={() => setSearchOpen(true)} />
       </div>
 
       <div style={{ marginBottom: "32px" }}>
@@ -1131,7 +805,13 @@ export default function Home() {
                 boxShadow: "0 4px 12px rgba(59, 130, 246, 0.3)",
                 opacity: !documentId || !canSegment ? 0.6 : 1,
               }}
-          title={!canSegment ? "Document must be parseStatus=ok to segment." : ""}
+          title={
+            !documentId 
+              ? "Please select a document from the dropdown first." 
+              : !canSegment 
+                ? `Document parseStatus is "${selectedUpload?.parseStatus || "unknown"}". Must be "ok" to segment. ${selectedUpload?.parseStatus === "pending" ? "Please wait for parsing to complete." : ""}` 
+                : "Click to segment the document"
+          }
               onMouseEnter={(e) => {
                 if (documentId && canSegment) {
                   e.currentTarget.style.transform = "translateY(-2px)";
@@ -1156,7 +836,7 @@ export default function Home() {
 
             <button
               onClick={loadSegments}
-              disabled={!documentId}
+              disabled={!documentId || !canSegment}
               style={{
                 padding: "12px 20px",
                 background: "linear-gradient(135deg, #a855f7 0%, #9333ea 100%)",
@@ -1166,16 +846,23 @@ export default function Home() {
                 fontWeight: 600,
                 fontSize: "var(--font-size-base)",
                 lineHeight: "var(--line-height-normal)",
-                cursor: !documentId ? "not-allowed" : "pointer",
+                cursor: !documentId || !canSegment ? "not-allowed" : "pointer",
                 display: "flex",
                 alignItems: "center",
                 gap: "8px",
                 transition: "all 0.2s ease",
                 boxShadow: "0 4px 12px rgba(168, 85, 247, 0.3)",
-                opacity: !documentId ? 0.6 : 1,
+                opacity: !documentId || !canSegment ? 0.6 : 1,
               }}
+              title={
+                !documentId 
+                  ? "Please select a document from the dropdown first." 
+                  : !canSegment 
+                    ? `Document parseStatus is "${selectedUpload?.parseStatus || "unknown"}". Must be "ok" to list segments. ${selectedUpload?.parseStatus === "pending" ? "Please wait for parsing to complete." : ""}` 
+                    : "Click to list segments"
+              }
               onMouseEnter={(e) => {
-                if (documentId) {
+                if (documentId && canSegment) {
                   e.currentTarget.style.transform = "translateY(-2px)";
                   e.currentTarget.style.boxShadow = "0 6px 16px rgba(168, 85, 247, 0.4)";
                 }
