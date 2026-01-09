@@ -57,14 +57,20 @@ app.add_middleware(
 def on_startup() -> None:
     ensure_data_dirs()
     
-    # ✅ Ensure database directory exists and is accessible
-    # NOTE: Schema creation is handled by Alembic migrations only (single source of truth)
-    # Run `alembic upgrade head` before starting the server
-    from ai_organizer.core.db import DB_URL, engine
+    # ✅ CRITICAL FIX: Create database tables unconditionally
+    # This ensures persistence across server restarts
+    from ai_organizer.core.db import DB_URL, engine, create_db_and_tables
     from pathlib import Path
     import logging
     
     logger = logging.getLogger(__name__)
+    
+    # Always create tables to ensure persistence
+    try:
+        create_db_and_tables()
+        logger.info("Database tables created/verified successfully")
+    except Exception as e:
+        logger.error(f"Failed to create database tables: {e}", exc_info=True)
     
     if DB_URL.startswith("sqlite"):
         db_path_str = DB_URL.replace("sqlite:///", "")
@@ -80,13 +86,6 @@ def on_startup() -> None:
         
         if db_path.exists():
             logger.info(f"Database file size: {db_path.stat().st_size} bytes")
-        
-        # Verify database file exists (should be created by Alembic migrations)
-        if not db_path.exists():
-            logger.warning(
-                f"Database file not found at {db_path}. "
-                "Run 'alembic upgrade head' to create the database schema."
-            )
     
     # Verify database connection and log location
     try:

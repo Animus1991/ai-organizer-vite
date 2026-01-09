@@ -1,5 +1,5 @@
 // C:\Users\anast\PycharmProjects\AI_ORGANIZER_VITE\src\pages\DocumentWorkspace.tsx
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   SegmentDTO,
@@ -9,7 +9,7 @@ import {
 import SegmentationSummaryBar from "../components/SegmentationSummaryBar";
 import FolderManagerDrawer from "../components/FolderManagerDrawer";
 import FolderDropZone from "../components/FolderDropZone";
-import { loadFolders, loadFolderMap, setSegmentFolder, addChunkToFolder, removeChunkFromFolder } from "../lib/segmentFolders";
+import { loadFolders, loadFolderMap, setSegmentFolder, addChunkToFolder, removeChunkFromFolder, filterFoldersWithItems } from "../lib/segmentFolders";
 import { duplicateSegment, loadDuplicatedChunks } from "../lib/chunkDuplication";
 import OutlineWizard from "../components/OutlineWizard";
 import { useMultiLoading } from "../hooks/useLoading";
@@ -34,6 +34,7 @@ export default function DocumentWorkspace() {
 
   // Workspace state (all useState declarations)
   const state = useWorkspaceState(docId, location?.state?.filename ?? null);
+  const [refreshKey, setRefreshKey] = useState(0); // Force re-render for folder operations
 
   // Document operations
   const segmentOps = useSegmentOperations(docId, state, setLoading);
@@ -237,13 +238,17 @@ export default function DocumentWorkspace() {
             isManual: duplicated.isManual,
             orderIndex: duplicated.orderIndex,
           });
+          // Small delay to ensure backend has processed the operation
+          await new Promise(resolve => setTimeout(resolve, 100));
           const [folders, folderMap] = await Promise.all([
-            loadFolders(docId),
+            loadFolders(docId, true), // skipCache to ensure fresh data after mutation
             loadFolderMap(docId),
           ]);
           setFolders(folders);
           setFolderMap(folderMap);
           setDuplicatedChunks(loadDuplicatedChunks(docId));
+          // Dispatch custom event to notify FolderView to refresh
+          window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
         } catch (error) {
           console.error("Failed to handle drop on folder:", error);
         }
@@ -257,8 +262,18 @@ export default function DocumentWorkspace() {
     e.preventDefault();
     if (draggedSegment) {
       await setSegmentFolder(docId, draggedSegment.id, null);
-      const folderMap = await loadFolderMap(docId);
+      // Small delay to ensure backend has processed the operation
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // Reload both folder map and folders to ensure UI is in sync
+      const [folders, folderMap] = await Promise.all([
+        loadFolders(docId, true), // skipCache to ensure fresh data after mutation
+        loadFolderMap(docId),
+      ]);
+      setFolders(folders);
       setFolderMap(folderMap);
+      setDuplicatedChunks(loadDuplicatedChunks(docId));
+      // Dispatch custom event to notify FolderView to refresh
+      window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
     }
     setDragOverFolder(null);
   };
@@ -356,6 +371,16 @@ export default function DocumentWorkspace() {
     if (sourceFilter === "manual") return segments.filter((s) => !!(s as any).isManual);
     return segments.filter((s) => !(s as any).isManual);
   }, [segments, sourceFilter]);
+
+  // Reset folderFilter if the selected folder no longer exists
+  useEffect(() => {
+    if (folderFilter !== "all" && folderFilter !== "none") {
+      const folderExists = folders.some(f => f.id === folderFilter);
+      if (!folderExists) {
+        setFolderFilter("all");
+      }
+    }
+  }, [folders, folderFilter, setFolderFilter]);
 
   const filteredSegments = useMemo(() => {
     const folderOk = (segId: number) => {
@@ -459,17 +484,32 @@ export default function DocumentWorkspace() {
           isManual: duplicated.isManual,
           orderIndex: duplicated.orderIndex,
         });
-        const [folders, folderMap] = await Promise.all([
-          loadFolders(docId),
-          loadFolderMap(docId),
-        ]);
-        setFolders(folders);
-        setFolderMap(folderMap);
+        // Small delay to ensure backend has processed the operation
+        await new Promise(resolve => setTimeout(resolve, 100));
+        // Explicitly clear cache before reloading
+        const { apiCache } = await import("../lib/cache");
+        const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+        apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+        apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+        // Load folders first
+        const allFolders = await loadFolders(docId, true); // skipCache to ensure fresh data after mutation
+        // Load folderMap to identify which folders have items (segments or chunks)
+        // Use skipCache=true to ensure fresh data after mutation
+        const folderMap = await loadFolderMap(docId, true);
+        // Filter folders: keep only folders that have at least one item (segment or chunk)
+        // This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
+        const foldersWithItems = filterFoldersWithItems(allFolders, folderMap);
+        setFolders([...foldersWithItems]);
+        setFolderMap({ ...folderMap });
         setDuplicatedChunks(loadDuplicatedChunks(docId));
+        // Dispatch custom event to notify FolderView to refresh
+        window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
       }
     } else {
       // Remove from folder - need to also remove duplicated chunk from folder.contents
-      const previousFolderId = folderMap[String(segment.id)];
+      // First, get current folderMap to find which folder the segment is in
+      const currentFolderMap = await loadFolderMap(docId);
+      const previousFolderId = currentFolderMap[String(segment.id)];
       if (previousFolderId) {
         // Find the duplicated chunk that corresponds to this segment
         const duplicatedChunks = loadDuplicatedChunks(docId);
@@ -482,12 +522,27 @@ export default function DocumentWorkspace() {
       }
       
       await setSegmentFolder(docId, segment.id, null);
-      const [folders, folderMap] = await Promise.all([
-        loadFolders(docId),
-        loadFolderMap(docId),
-      ]);
-      setFolders(folders);
-      setFolderMap(folderMap);
+      // Small delay to ensure backend has processed the operation
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // Explicitly clear cache before reloading
+      const { apiCache } = await import("../lib/cache");
+      const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+      // Reload both folder map and folders to ensure UI is in sync
+      // Load folders first
+      const allFolders = await loadFolders(docId, true); // skipCache to ensure fresh data after mutation
+      // Load folderMap to identify which folders have items (segments or chunks)
+      // Use skipCache=true to ensure fresh data after mutation
+      const folderMap = await loadFolderMap(docId, true);
+      // Filter folders: keep only folders that have at least one item (segment or chunk)
+      // This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
+      const foldersWithItems = filterFoldersWithItems(allFolders, folderMap);
+      setFolders([...foldersWithItems]);
+      setFolderMap({ ...folderMap });
+      setDuplicatedChunks(loadDuplicatedChunks(docId));
+      // Dispatch custom event to notify FolderView to refresh
+      window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
     }
   }
 
@@ -1018,13 +1073,56 @@ export default function DocumentWorkspace() {
                   onCancelDelete={cancelDelete}
                   onBackToList={() => setOpenSeg(null)}
                   onChunkUpdated={async () => {
-                    const [folders, folderMap] = await Promise.all([
-                      loadFolders(docId),
-                      loadFolderMap(docId),
-                    ]);
-                    setFolders(folders);
-                    setFolderMap(folderMap);
-                    setDuplicatedChunks(loadDuplicatedChunks(docId));
+                    // Increased delay to ensure backend has fully processed the operation
+                    // This is critical for folder deletion to propagate correctly
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    // Explicitly clear ALL folder-related cache before reloading to ensure fresh data
+                    // This includes: list folders, get folder (with items), folder map
+                    const { apiCache } = await import("../lib/cache");
+                    const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+                    // Clear all folder-related caches - be thorough to avoid stale data
+                    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+                    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+                    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+                    // Reload all folder-related data to ensure UI is in sync
+                    // Use skipCache=true to force fresh data from backend
+                    try {
+                      // Load folders first
+                      const allFolders = await loadFolders(docId, true);
+                      // Load folderMap to identify which folders have items (segments or chunks)
+                      // Use skipCache=true to ensure fresh data after chunk deletion
+                      const folderMap = await loadFolderMap(docId, true);
+                      // Filter folders: keep only folders that have at least one item (segment or chunk)
+                      // This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
+                      const foldersWithItems = filterFoldersWithItems(allFolders, folderMap);
+                      // Create new array reference to ensure React detects the change
+                      setFolders([...foldersWithItems]);
+                      setFolderMap({ ...folderMap });
+                      setDuplicatedChunks(loadDuplicatedChunks(docId));
+                    } catch (error) {
+                      // If load fails (e.g., auth error), try again after a longer delay
+                      // This handles cases where backend needs more time or auth is refreshing
+                      await new Promise(resolve => setTimeout(resolve, 300));
+                      try {
+                        // Load folders first
+                        const allFolders = await loadFolders(docId, true);
+                        // Load folderMap to identify which folders have items (segments or chunks)
+                        // Use skipCache=true to ensure fresh data after chunk deletion
+                        const folderMap = await loadFolderMap(docId, true);
+                        // Filter folders: keep only folders that have at least one item (segment or chunk)
+                        // This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
+                        const foldersWithItems = filterFoldersWithItems(allFolders, folderMap);
+                        // Create new array/object references to ensure React detects the change
+                        setFolders([...foldersWithItems]);
+                        setFolderMap({ ...folderMap });
+                        setDuplicatedChunks(loadDuplicatedChunks(docId));
+                      } catch (retryError) {
+                        // If retry also fails, log but don't break the UI
+                        console.error("Failed to reload folders after chunk delete:", retryError);
+                      }
+                    }
+                    // Dispatch custom event to notify FolderView to refresh
+                    window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
                   }}
                   onBackFromFolder={() => setFolderFilter("all")}
                 />
@@ -1130,7 +1228,10 @@ export default function DocumentWorkspace() {
           // For manual chunks, we also need to handle duplicated chunks
           if (!folderId) {
             // Remove from folder - need to also remove duplicated chunk from folder.contents
-            const previousFolderId = folderMap[String(segmentId)];
+            // First, get current folderMap to find which folder the segment is in
+            // Use skipCache=true to ensure fresh data
+            const currentFolderMap = await loadFolderMap(docId, true);
+            const previousFolderId = currentFolderMap[String(segmentId)];
             if (previousFolderId) {
               // Find the duplicated chunk that corresponds to this segment
               const duplicatedChunks = loadDuplicatedChunks(docId);
@@ -1142,13 +1243,30 @@ export default function DocumentWorkspace() {
               }
             }
           }
+          
           await setSegmentFolder(docId, segmentId, folderId);
-          const [folders, updatedFolderMap] = await Promise.all([
-            loadFolders(docId),
-            loadFolderMap(docId),
-          ]);
-          setFolders(folders);
-          setFolderMap(updatedFolderMap);
+          // Small delay to ensure backend has processed the operation
+          await new Promise(resolve => setTimeout(resolve, 100));
+          // Explicitly clear cache before reloading
+          const { apiCache } = await import("../lib/cache");
+          const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+          apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+          apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+          // Reload folder data to ensure UI is in sync
+          // Load folders first
+          const allFolders = await loadFolders(docId, true); // skipCache to ensure fresh data after mutation
+          // Load folderMap to identify which folders have items (segments or chunks)
+          // Use skipCache=true to ensure fresh data after mutation
+          const folderMap = await loadFolderMap(docId, true);
+          // Filter folders: keep only folders that have at least one item (segment or chunk)
+          // This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
+          const foldersWithItems = filterFoldersWithItems(allFolders, folderMap);
+          // Create new array/object references to ensure React detects the change
+          setFolders([...foldersWithItems]);
+          setFolderMap({ ...folderMap });
+          setDuplicatedChunks(loadDuplicatedChunks(docId));
+          // Dispatch custom event to notify FolderView to refresh
+          window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
         }}
         onSegmentSelect={(seg) => {
           if (manualClickTimerRef.current) window.clearTimeout(manualClickTimerRef.current);
@@ -1227,10 +1345,23 @@ export default function DocumentWorkspace() {
         docId={docId}
         open={foldersOpen}
         onClose={() => setFoldersOpen(false)}
+        folders={folders} // Pass folders as prop to make it controlled
         onChanged={async (updatedFolders) => {
-          setFolders(updatedFolders);
-          const folderMap = await loadFolderMap(docId);
-          setFolderMap(folderMap);
+          // Explicitly clear cache before reloading to ensure fresh data
+          const { apiCache } = await import("../lib/cache");
+          const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+          apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+          apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+          // Update folders state immediately (create new array reference)
+          setFolders([...updatedFolders]);
+          // Also reload folder map to ensure consistency
+          // Use skipCache=true to ensure fresh data after mutation
+          const folderMap = await loadFolderMap(docId, true);
+          setFolderMap({ ...folderMap });
+          // Reload duplicated chunks to ensure they're in sync
+          setDuplicatedChunks(loadDuplicatedChunks(docId));
+          // Dispatch custom event to notify FolderView to refresh
+          window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
         }}
       />
 

@@ -133,6 +133,7 @@ export default function WorkspaceFilters({
 
         {/* Folder Filter */}
         <select
+          key={`folder-filter-${folders.map(f => f.id).sort().join(',')}`}
           value={folderFilter}
           onChange={(e) => onFolderFilterChange(e.target.value)}
           className="px-3 py-2 bg-surface border border-border rounded"
@@ -153,7 +154,9 @@ export default function WorkspaceFilters({
 
         {/* Folders Button */}
         <button 
-          onClick={onFoldersOpen} 
+          onClick={() => {
+            onFoldersOpen();
+          }} 
           className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2" 
           style={{ 
             padding: "8px 10px", 

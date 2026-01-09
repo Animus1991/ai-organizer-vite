@@ -172,7 +172,16 @@ export async function authFetch(path: string, init: RequestInit = {}) {
 
   if (res.status === 401) {
     const newAccess = await refreshTokens();
-    if (newAccess) res = await doFetch(newAccess);
+    if (newAccess) {
+      res = await doFetch(newAccess);
+    } else {
+      // Refresh failed - token expired or invalid
+      // Clear tokens and trigger logout
+      clearTokens();
+      // Dispatch custom event to notify AuthProvider
+      window.dispatchEvent(new CustomEvent('auth:token-expired'));
+      // Return the 401 response so caller can handle it
+    }
   }
 
   // Cache successful GET responses
@@ -187,7 +196,40 @@ export async function authFetch(path: string, init: RequestInit = {}) {
 
   // Invalidate cache for mutations (POST, PUT, DELETE, PATCH)
   if (!isGet && res.ok) {
-    // Clear related caches based on the endpoint
+    console.log("🗑️ authFetch: Invalidating cache for mutation", { method, url, status: res.status });
+    
+    // Clear related caches based on endpoint
+    if (url.includes('/workspace/folders')) {
+      // Clear folders cache for workspace operations
+      // Handle both /workspace/folders (POST) and /workspace/documents/{docId}/folders (GET)
+      console.log("🗑️ authFetch: Clearing folders cache", { url });
+      const docIdMatch = url.match(/\/documents\/(\d+)\/folders/);
+      if (docIdMatch) {
+        const docId = docIdMatch[1];
+        apiCache.delete(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+      }
+      // For POST /workspace/folders, we need to clear all document folders caches
+      // The payload should contain documentId, but we can't access it here
+      // So we clear all folder-related caches
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/`);
+    }
+    if (url.includes('/workspace/folder-items')) {
+      // Clear folders cache when folder items change (add/remove chunks)
+      // This includes: /workspace/folders (list), /workspace/folders/{id} (get), /workspace/documents/{id}/folders
+      console.log("🗑️ authFetch: Clearing folder-items cache", { url });
+      // Extract folderId from URL if it's a DELETE request for a specific item
+      // DELETE /workspace/folder-items/{itemId} - we need to get the folder to clear its cache
+      const itemIdMatch = url.match(/\/folder-items\/(\d+)/);
+      if (itemIdMatch) {
+        // For DELETE, clear all folder caches since we can't determine which folder was affected without an extra API call
+        // The folder-specific cache will be cleared by explicit calls in the code
+        apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+      }
+      // Clear all folder-related caches to ensure fresh data
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/`);
+    }
     if (url.includes('/uploads') || url.includes('/upload')) {
       // Clear all uploads cache variations (with/without query params)
       const baseCacheKey = 'cache:' + API_BASE + '/api/uploads';
@@ -690,9 +732,10 @@ export type DocumentNoteDTO = {
   updatedAt: string;
 };
 
-// Folders
+// Folders (workspace)
 export async function listFolders(documentId: number): Promise<FolderDTO[]> {
-  const res = await authFetch(`/documents/${documentId}/folders`);
+  // Workspace router is mounted under /workspace
+  const res = await authFetch(`/workspace/documents/${documentId}/folders`);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to list folders (${res.status})`);
@@ -701,7 +744,7 @@ export async function listFolders(documentId: number): Promise<FolderDTO[]> {
 }
 
 export async function getFolder(folderId: number): Promise<FolderWithItemsDTO> {
-  const res = await authFetch(`/folders/${folderId}`);
+  const res = await authFetch(`/workspace/folders/${folderId}`);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to get folder (${res.status})`);
@@ -710,7 +753,7 @@ export async function getFolder(folderId: number): Promise<FolderWithItemsDTO> {
 }
 
 export async function createFolder(documentId: number, name: string): Promise<FolderDTO> {
-  const res = await authFetch(`/folders`, {
+  const res = await authFetch(`/workspace/folders`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ documentId, name }),
@@ -723,7 +766,7 @@ export async function createFolder(documentId: number, name: string): Promise<Fo
 }
 
 export async function updateFolder(folderId: number, name: string): Promise<FolderDTO> {
-  const res = await authFetch(`/folders/${folderId}?name=${encodeURIComponent(name)}`, {
+  const res = await authFetch(`/workspace/folders/${folderId}?name=${encodeURIComponent(name)}`, {
     method: "PATCH",
   });
   if (!res.ok) {
@@ -734,7 +777,7 @@ export async function updateFolder(folderId: number, name: string): Promise<Fold
 }
 
 export async function deleteFolder(folderId: number): Promise<void> {
-  const res = await authFetch(`/folders/${folderId}`, { method: "DELETE" });
+  const res = await authFetch(`/workspace/folders/${folderId}`, { method: "DELETE" });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to delete folder (${res.status})`);
@@ -751,29 +794,46 @@ export async function createFolderItem(payload: {
   chunkIsManual?: boolean | null;
   chunkOrderIndex?: number | null;
 }): Promise<FolderItemDTO> {
-  const res = await authFetch(`/folder-items`, {
+  const res = await authFetch(`/workspace/folder-items`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
+    // Handle 409 Conflict - item already in folder (not an error, just return existing item)
+    if (res.status === 409) {
+      // Try to get the existing item
+      try {
+        const folder = await getFolder(payload.folderId);
+        const existingItem = folder.items.find(
+          item => (payload.segmentId && item.segmentId === payload.segmentId) ||
+                  (payload.chunkId && item.chunkId === payload.chunkId)
+        );
+        if (existingItem) {
+          return existingItem;
+        }
+      } catch {
+        // If we can't get the existing item, just return a minimal response
+        return { id: 0, folderId: payload.folderId, segmentId: payload.segmentId ?? null, chunkId: payload.chunkId ?? null } as FolderItemDTO;
+      }
+    }
     throw new Error(txt || `Failed to create folder item (${res.status})`);
   }
   return (await res.json()) as FolderItemDTO;
 }
 
 export async function deleteFolderItem(itemId: number): Promise<void> {
-  const res = await authFetch(`/folder-items/${itemId}`, { method: "DELETE" });
+  const res = await authFetch(`/workspace/folder-items/${itemId}`, { method: "DELETE" });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to delete folder item (${res.status})`);
   }
 }
 
-// Smart Notes
+// Smart Notes (workspace)
 export async function listSmartNotes(documentId: number): Promise<SmartNoteDTO[]> {
-  const res = await authFetch(`/documents/${documentId}/smart-notes`);
+  const res = await authFetch(`/workspace/documents/${documentId}/smart-notes`);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to list smart notes (${res.status})`);
@@ -790,7 +850,7 @@ export async function createSmartNote(payload: {
   priority?: string;
   chunkId?: number | null;
 }): Promise<SmartNoteDTO> {
-  const res = await authFetch(`/smart-notes`, {
+  const res = await authFetch(`/workspace/smart-notes`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
@@ -813,7 +873,7 @@ export async function updateSmartNote(
     chunkId?: number | null;
   }
 ): Promise<SmartNoteDTO> {
-  const res = await authFetch(`/smart-notes/${noteId}`, {
+  const res = await authFetch(`/workspace/smart-notes/${noteId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(payload),
@@ -826,16 +886,16 @@ export async function updateSmartNote(
 }
 
 export async function deleteSmartNote(noteId: number): Promise<void> {
-  const res = await authFetch(`/smart-notes/${noteId}`, { method: "DELETE" });
+  const res = await authFetch(`/workspace/smart-notes/${noteId}`, { method: "DELETE" });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to delete smart note (${res.status})`);
   }
 }
 
-// Document Notes
+// Document Notes (workspace)
 export async function getDocumentNote(documentId: number): Promise<DocumentNoteDTO | null> {
-  const res = await authFetch(`/documents/${documentId}/note`);
+  const res = await authFetch(`/workspace/documents/${documentId}/note`);
   if (!res.ok) {
     if (res.status === 404) return null;
     const txt = await res.text().catch(() => "");
@@ -849,7 +909,7 @@ export async function upsertDocumentNote(
   html: string,
   text: string
 ): Promise<DocumentNoteDTO> {
-  const res = await authFetch(`/documents/${documentId}/note`, {
+  const res = await authFetch(`/workspace/documents/${documentId}/note`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ html, text }),
@@ -862,14 +922,14 @@ export async function upsertDocumentNote(
 }
 
 export async function deleteDocumentNote(documentId: number): Promise<void> {
-  const res = await authFetch(`/documents/${documentId}/note`, { method: "DELETE" });
+  const res = await authFetch(`/workspace/documents/${documentId}/note`, { method: "DELETE" });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to delete document note (${res.status})`);
   }
 }
 
-// Migration
+// Migration (workspace)
 export async function migrateLocalStorageData(
   documentId: number,
   payload: {
@@ -880,7 +940,7 @@ export async function migrateLocalStorageData(
     documentNote?: any;
   }
 ): Promise<{ ok: boolean; imported: any; message: string }> {
-  const res = await authFetch(`/documents/${documentId}/migrate-localstorage`, {
+  const res = await authFetch(`/workspace/documents/${documentId}/migrate-localstorage`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({ documentId, ...payload }),

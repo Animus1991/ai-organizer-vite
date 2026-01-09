@@ -121,7 +121,24 @@ export default function Home() {
       // Clear cache to ensure fresh data when returning to page
       const baseCacheKey = 'cache:http://127.0.0.1:8000/api/uploads';
       apiCache.deleteByPrefix(baseCacheKey);
-      fetchUploads();
+      fetchUploads().then(() => {
+        // After fetching uploads, ensure documentId is still valid
+        // If documentId is set but upload doesn't exist, clear it
+        if (documentId) {
+          const upload = uploads.find((u) => u.documentId === documentId);
+          if (!upload) {
+            // Document no longer exists, clear selection
+            setDocumentId(null);
+          } else {
+            // Document exists, ensure canSegment is updated by triggering a re-render
+            // This helps when returning from workspace
+            if (upload.parseStatus === "ok" && !canSegment) {
+              // Force re-evaluation of canSegment
+              setDocumentId(documentId);
+            }
+          }
+        }
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname, user]);

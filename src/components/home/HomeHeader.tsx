@@ -60,14 +60,13 @@ export function HomeHeader({ user, onLogout, onSearch }: HomeHeaderProps) {
             style={{
               fontSize: "var(--font-size-2xl)",
               lineHeight: "var(--line-height-snug)",
-              letterSpacing: "var(--letter-spacing-tight)",
+              letterSpacing: "-0.5px",
               fontWeight: 800,
               background: "linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #ec4899 100%)",
               WebkitBackgroundClip: "text",
               WebkitTextFillColor: "transparent",
               backgroundClip: "text",
               margin: 0,
-              letterSpacing: "-0.5px",
             }}
           >
             AI Organizer

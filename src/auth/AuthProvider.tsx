@@ -149,7 +149,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const refreshToken = getRefreshToken();
       
       if (accessToken) {
-        await refreshMe();
+        try {
+          await refreshMe();
+        } catch {
+          // If /me fails, try refresh
+          if (refreshToken) {
+            try {
+              const { refreshTokens } = await import("../lib/api");
+              const newAccess = await refreshTokens();
+              if (newAccess) {
+                await refreshMe();
+              } else {
+                // Refresh failed, logout
+                await logout();
+              }
+            } catch {
+              await logout();
+            }
+          } else {
+            setUser(null);
+          }
+        }
       } else if (refreshToken) {
         // Try to refresh tokens first, then load user
         try {
@@ -158,10 +178,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (newAccess) {
             await refreshMe();
           } else {
-            setUser(null);
+            // Refresh failed, logout
+            await logout();
           }
         } catch {
-          setUser(null);
+          await logout();
         }
       } else {
         setUser(null);
@@ -169,6 +190,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     
     loadUser();
+    
+    // Listen for token expiration events from authFetch
+    const handleTokenExpired = async () => {
+      await logout();
+    };
+    window.addEventListener('auth:token-expired', handleTokenExpired);
     
     // Set up periodic token refresh (every 5 minutes) to keep session alive
     const refreshInterval = setInterval(async () => {
@@ -181,20 +208,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (newAccess) {
             await refreshMe();
           } else {
-            // Refresh failed, clear user
-            setUser(null);
+            // Refresh failed, logout
+            await logout();
           }
         } catch {
-          setUser(null);
+          await logout();
         }
       } else if (refreshToken) {
         // Access token exists, just verify user is still logged in
-        await refreshMe();
+        try {
+          await refreshMe();
+        } catch {
+          // If /me fails, try refresh
+          try {
+            const { refreshTokens } = await import("../lib/api");
+            const newAccess = await refreshTokens();
+            if (newAccess) {
+              await refreshMe();
+            } else {
+              await logout();
+            }
+          } catch {
+            await logout();
+          }
+        }
       }
     }, 5 * 60 * 1000); // Every 5 minutes
     
     return () => {
       clearInterval(refreshInterval);
+      window.removeEventListener('auth:token-expired', handleTokenExpired);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

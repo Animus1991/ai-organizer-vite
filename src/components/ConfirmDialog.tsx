@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 
 export type ConfirmDialogType = "delete" | "warning" | "info";
 
@@ -23,6 +24,33 @@ export default function ConfirmDialog({
   onConfirm, 
   onCancel 
 }: ConfirmDialogProps) {
+  const el = useMemo(() => {
+    const d = document.createElement("div");
+    d.setAttribute("data-confirm-dialog-root", "true");
+    return d;
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    document.body.appendChild(el);
+    return () => {
+      try {
+        document.body.removeChild(el);
+      } catch {
+        // ignore
+      }
+    };
+  }, [open, el]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onCancel]);
+
   if (!open) return null;
 
   const getTypeStyles = () => {
@@ -53,17 +81,22 @@ export default function ConfirmDialog({
 
   const styles = getTypeStyles();
 
-  return (
+  return createPortal(
     <div style={{
       position: "fixed",
       inset: 0,
-      background: "rgba(0, 0, 0, 0.5)",
+      background: "rgba(0, 0, 0, 0.7)",
+      backdropFilter: "blur(4px)",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      zIndex: 1000,
+      zIndex: 5000, // Higher than Drawer (4000)
       padding: 20
-    }}>
+    }}
+    onMouseDown={(e) => {
+      if (e.target === e.currentTarget) onCancel();
+    }}
+    >
       <div style={{
         background: "#0b0e14",
         border: `1px solid ${styles.borderColor}`,
@@ -150,6 +183,7 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    el
   );
 }

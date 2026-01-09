@@ -1,39 +1,157 @@
 // src/components/FolderManagerDrawer.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import Drawer from "./Drawer";
+import ConfirmDialog from "./ConfirmDialog";
 import { FolderDTO, createFolder, deleteFolder, loadFolders, renameFolder } from "../lib/segmentFolders";
 
-type Props = {
+export interface Props {
   docId: number;
   open: boolean;
   onClose: () => void;
-  onChanged?: (folders: FolderDTO[]) => void;
-};
+  folders?: FolderDTO[];
+  onChanged?: (folders: FolderDTO[]) => Promise<void>;
+  refreshKey?: number; // Force re-render
+}
 
-export default function FolderManagerDrawer({ docId, open, onClose, onChanged }: Props) {
-  const [folders, setFolders] = useState<FolderDTO[]>([]);
+export default function FolderManagerDrawer({ docId, open, onClose, folders: foldersProp, onChanged, refreshKey }: Props) {
+  const [localFolders, setLocalFolders] = useState<FolderDTO[]>([]);
   const [name, setName] = useState("");
+  const [deletingFolder, setDeletingFolder] = useState<{ id: string; name: string } | null>(null);
+
+  // Use prop if provided, otherwise use local state
+  const folders = foldersProp ?? localFolders;
+
+  // Sync folders prop to local state when it changes (for controlled mode)
+  useEffect(() => {
+    if (foldersProp !== undefined) {
+      // Always sync when prop changes - React will handle if it's the same reference
+      const propIds = foldersProp.map(f => `${f.id}-${f.name}`).sort().join(',');
+      const localIds = localFolders.map(f => `${f.id}-${f.name}`).sort().join(',');
+      if (propIds !== localIds) {
+        setLocalFolders(foldersProp);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [foldersProp]); // Only depend on foldersProp, not localFolders to avoid loops
 
   useEffect(() => {
     if (!open) return;
-    const load = async () => {
-      const f = await loadFolders(docId);
-      setFolders(f);
-    };
-    load();
-  }, [open, docId]);
+    // Only load if folders prop is not provided (uncontrolled mode)
+    if (foldersProp === undefined) {
+      const load = async () => {
+        const f = await loadFolders(docId);
+        setLocalFolders(f);
+        // Notify parent component when folders are loaded
+        if (onChanged) {
+          await onChanged(f);
+        }
+      };
+      load();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, docId]); // Removed refreshKey from dependencies - refresh() will handle updates directly
 
   const canAdd = useMemo(() => name.trim().length >= 1, [name]);
 
   async function refresh() {
-    const f = await loadFolders(docId);
-    setFolders(f);
-    onChanged?.(f);
+    // Small delay to ensure backend has processed the operation
+    await new Promise(resolve => setTimeout(resolve, 100));
+    // Explicitly clear ALL folder-related cache before reloading to ensure fresh data
+    // This includes: list folders, get folder (with items), folder map
+    const { apiCache } = await import("../lib/cache");
+    const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+    // Clear all folder-related caches
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+    // Load fresh folders (skip cache to ensure we get latest data)
+    const f = await loadFolders(docId, true);
+    // Update local state if not controlled
+    if (foldersProp === undefined) {
+      setLocalFolders(f);
+    }
+    // Notify parent component immediately (await if it's async)
+    if (onChanged) {
+      await onChanged(f);
+    }
+    // Note: refreshKey is handled by parent component
+  }
+
+  // Listen for folder-chunk-updated events to refresh folder list
+  useEffect(() => {
+    const handleFolderChunkUpdated = () => {
+      refresh();
+    };
+    window.addEventListener('folder-chunk-updated', handleFolderChunkUpdated);
+    return () => {
+      window.removeEventListener('folder-chunk-updated', handleFolderChunkUpdated);
+    };
+  }, [docId, onChanged]);
+
+  async function handleCreateFolder() {
+    if (!canAdd) return;
+    
+    try {
+      await createFolder(docId, name);
+      setName("");
+      // Immediately refresh to show the new folder
+      await refresh();
+    } catch (error) {
+      console.error("Failed to create folder:", error);
+      // Still try to refresh in case of partial success
+      await refresh();
+    }
+  }
+
+  async function handleRenameFolder(folderId: string, newName: string) {
+    const v = newName.trim();
+    if (!v || v === folders.find(f => String(f.id) === folderId)?.name) return;
+    
+    try {
+      await renameFolder(docId, folderId, v);
+      // Immediately refresh to show the updated name
+      await refresh();
+    } catch (error) {
+      console.error("Failed to rename folder:", error);
+      // Still try to refresh in case of partial success
+      await refresh();
+    }
+  }
+
+  async function handleDeleteFolder(folderId: string, folderName: string) {
+    setDeletingFolder({ id: folderId, name: folderName });
+  }
+
+  async function confirmDeleteFolder() {
+    if (!deletingFolder) return;
+    
+    const { id: folderId, name: folderName } = deletingFolder;
+    setDeletingFolder(null);
+    
+    try {
+      await deleteFolder(docId, folderId);
+      // Immediately refresh to remove the folder from list
+      await refresh();
+    } catch (error) {
+      console.error("Failed to delete folder:", error);
+      // Still try to refresh in case of partial success
+      await refresh();
+    }
   }
 
   return (
-    <Drawer open={open} onClose={onClose} title={`Folders • Document #${docId}`} width={560}>
-      <div className="space-y-4">
+    <>
+      <ConfirmDialog
+        open={deletingFolder !== null}
+        title="Delete Folder"
+        message={`Delete folder "${deletingFolder?.name}"? (will unassign segments)`}
+        type="delete"
+        confirmText="Delete"
+        cancelText="Cancel"
+        onConfirm={confirmDeleteFolder}
+        onCancel={() => setDeletingFolder(null)}
+      />
+      <Drawer open={open} onClose={onClose} title={`Folders • Document #${docId}`} width={560}>
+        <div className="space-y-4">
         {/* Add New Folder */}
         <div
           style={{
@@ -72,11 +190,7 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
             />
             <button
               disabled={!canAdd}
-              onClick={async () => {
-                await createFolder(docId, name);
-                setName("");
-                await refresh();
-              }}
+              onClick={handleCreateFolder}
               style={{
                 padding: "12px 20px",
                 background: canAdd ? "linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)" : "rgba(107, 114, 128, 0.3)",
@@ -147,8 +261,7 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
                     onBlur={async (e) => {
                       const v = e.target.value.trim();
                       if (!v || v === f.name) return;
-                      await renameFolder(docId, f.id, v);
-                      await refresh();
+                      await handleRenameFolder(String(f.id), v);
                     }}
                     className="flex-1 bg-transparent border-none outline-none text-primary font-medium"
                     style={{
@@ -163,10 +276,7 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
                 </div>
                 <button
                   onClick={async () => {
-                    const ok = window.confirm(`Delete folder "${f.name}"? (will unassign segments)`);
-                    if (!ok) return;
-                    await deleteFolder(docId, f.id);
-                    await refresh();
+                    await handleDeleteFolder(String(f.id), f.name);
                   }}
                   className="btn-danger p-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors opacity-0 group-hover:opacity-100"
                   style={{ padding: "8px 10px" }}
@@ -181,5 +291,6 @@ export default function FolderManagerDrawer({ docId, open, onClose, onChanged }:
         )}
       </div>
     </Drawer>
+    </>
   );
 }

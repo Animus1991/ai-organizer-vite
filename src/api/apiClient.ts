@@ -48,8 +48,9 @@ api.interceptors.response.use(
       const newAccess = await refreshTokens();
 
       if (!newAccess) {
-        // Refresh failed -> clear tokens and reject
+        // Refresh failed -> clear tokens, dispatch event, and reject
         clearTokens();
+        window.dispatchEvent(new CustomEvent('auth:token-expired'));
         return Promise.reject(error);
       }
 
@@ -61,6 +62,7 @@ api.interceptors.response.use(
     } catch (e) {
       // refresh failed -> καθάρισε tokens (force re-login)
       clearTokens();
+      window.dispatchEvent(new CustomEvent('auth:token-expired'));
       return Promise.reject(e);
     }
   }

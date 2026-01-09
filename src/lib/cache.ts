@@ -86,6 +86,9 @@ export const cacheKeys = {
   document: (id: number) => `document:${id}`,
   segments: (docId: number, mode?: string) => `segments:${docId}:${mode || 'all'}`,
   segmentations: (docId: number) => `segmentations:${docId}`,
+  folders: (docId: number) => `folders:${docId}`,
+  folder: (folderId: number) => `folder:${folderId}`,
+  folderItems: (folderId: number) => `folder-items:${folderId}`,
 };
 
 // Request deduplication

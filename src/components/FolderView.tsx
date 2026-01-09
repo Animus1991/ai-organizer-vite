@@ -39,7 +39,8 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
       }
     };
     loadItems();
-  }, [docId, folder.id, refreshKey]);
+    // Also trigger refresh when onChunkUpdated is called (via refreshKey)
+  }, [docId, folder.id, refreshKey, onChunkUpdated]);
 
   // Also listen for storage events to update when folder changes from other tabs/components
   useEffect(() => {
@@ -51,6 +52,15 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
     window.addEventListener('storage', handleStorageChange);
     return () => window.removeEventListener('storage', handleStorageChange);
   }, [docId]);
+
+  // Listen for custom event when chunks are updated
+  useEffect(() => {
+    const handleChunkUpdate = () => {
+      setRefreshKey(prev => prev + 1);
+    };
+    window.addEventListener('folder-chunk-updated', handleChunkUpdate);
+    return () => window.removeEventListener('folder-chunk-updated', handleChunkUpdate);
+  }, []);
 
   // Load fresh data from API
   const currentFolder = useMemo(() => {
@@ -92,11 +102,66 @@ export default function FolderView({ docId, folder, onBack, onChunkUpdated }: Fo
     setDeletingId(chunkId);
   };
 
-  const confirmDeleteChunk = (chunkId: string) => {
-    deleteDuplicatedChunk(docId, chunkId);
-    setDeletingId(null);
-    setRefreshKey(prev => prev + 1); // Force refresh
-    onChunkUpdated();
+  const confirmDeleteChunk = async (chunkId: string) => {
+    try {
+      // Find the folder item for this chunk and delete it from API
+      const folderWithItems = await apiGetFolder(parseInt(folder.id, 10));
+      const folderItem = folderWithItems.items.find(item => item.chunkId === chunkId);
+      
+      if (folderItem) {
+        const { deleteFolderItem } = await import("../lib/api");
+        await deleteFolderItem(folderItem.id);
+      }
+      
+      // Also delete from localStorage (duplicated chunks)
+      deleteDuplicatedChunk(docId, chunkId);
+      
+      // Clear cache IMMEDIATELY after deletion to ensure fresh data on reload
+      // This must happen before any delay to prevent stale cache
+      const { apiCache } = await import("../lib/cache");
+      const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+      // Clear all folder-related caches - be thorough to avoid stale data
+      // This includes the specific folder that was modified
+      apiCache.delete(`cache:${API_BASE}/api/workspace/folders/${folder.id}`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+      
+      // Increased delay to ensure backend has fully processed the deletion
+      // This is critical for folder deletion to propagate correctly
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      setDeletingId(null);
+      setRefreshKey(prev => prev + 1); // Force refresh of FolderView
+      
+      // Call onChunkUpdated to update parent state (DocumentWorkspace)
+      // This will reload folders and folderMap with fresh data, filtering out empty folders
+      // MUST await to ensure parent state is updated before continuing
+      await onChunkUpdated();
+      
+      // Dispatch custom event to notify other components (backup mechanism)
+      // This ensures FolderView and other components refresh if onChunkUpdated didn't fully update
+      window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
+    } catch (error) {
+      console.error("Failed to delete chunk from folder:", error);
+      // Still delete from localStorage as fallback
+      deleteDuplicatedChunk(docId, chunkId);
+      
+      // Clear cache even on error
+      const { apiCache } = await import("../lib/cache");
+      const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+      
+      setDeletingId(null);
+      setRefreshKey(prev => prev + 1);
+      
+      // Still call onChunkUpdated even on error
+      onChunkUpdated();
+      
+      // Dispatch custom event even on error
+      window.dispatchEvent(new CustomEvent('folder-chunk-updated'));
+    }
   };
 
   const cancelDelete = () => {

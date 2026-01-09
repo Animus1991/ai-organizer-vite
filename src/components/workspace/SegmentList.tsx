@@ -206,13 +206,16 @@ export function SegmentList({
                     <span style={{ fontSize: "var(--font-size-xs)", lineHeight: "var(--line-height-normal)", opacity: 0.7 }}>{s.mode}</span>
 
                     <select
+                      key={`folder-select-${s.id}-${folders.map(f => f.id).sort().join(',')}`}
                       value={folderMap[String(s.id)] ?? "none"}
                       onChange={(e) => {
                         e.stopPropagation();
                         const folderId = e.target.value === "none" ? null : e.target.value;
                         onFolderChange(s, folderId);
                       }}
-                      onClick={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                      }}
                       style={{
                         padding: "4px 8px",
                         borderRadius: 6,
@@ -230,6 +233,23 @@ export function SegmentList({
                         </option>
                       ))}
                     </select>
+                    <button
+                      onClick={() => {
+                        onFolderChange(s, folders[0]?.id || null);
+                      }}
+                      style={{
+                        padding: "4px 8px",
+                        borderRadius: 6,
+                        border: "1px solid rgba(255,255,255,0.12)",
+                        background: "#ff6b6b",
+                        color: "white",
+                        fontSize: "var(--font-size-xs)",
+                        lineHeight: "var(--line-height-normal)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      TEST
+                    </button>
 
                     <button
                       onClick={(e) => {

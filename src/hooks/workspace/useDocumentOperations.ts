@@ -33,6 +33,12 @@ export function useDocumentOperations(
       state.setParseError((d.parseError as any) ?? null);
       state.setSourceType((d.sourceType as any) ?? null);
 
+      // Force re-evaluation of canSegment by ensuring parseStatus is updated
+      // This is critical for segmentation buttons to work
+      setTimeout(() => {
+        state.setParseStatus(d.parseStatus ?? "pending");
+      }, 100);
+
       // Auto-migrate localStorage data if exists
       const hasLocalNote = localStorage.getItem(`aiorg_note_html_doc_${docId}`);
       if (hasLocalNote) {

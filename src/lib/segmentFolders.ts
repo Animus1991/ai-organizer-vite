@@ -71,8 +71,18 @@ function apiToLegacyFolder(apiFolder: FolderDTO, items?: FolderItemDTO[]): Folde
  * Load folders from API (database-first)
  * Read fallback to localStorage ONLY if API fails (read-only)
  */
-export async function loadFolders(docId: number): Promise<FolderDTO[]> {
+export async function loadFolders(docId: number, skipCache: boolean = false): Promise<FolderDTO[]> {
   await ensureMigrated(docId);
+  
+  // If skipCache is true, clear cache before loading
+  if (skipCache) {
+    const { apiCache } = await import("./cache");
+    const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+    // Clear all folder-related caches - be thorough to avoid stale data
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+  }
   
   try {
     const apiFolders = await listFolders(docId);
@@ -112,14 +122,13 @@ export function saveFolders(_docId: number, _folders: FolderDTO[]) {
 export async function createFolder(docId: number, name: string): Promise<FolderDTO> {
   await ensureMigrated(docId);
   
-  // Database-only - throw error if API fails
-  const apiFolder = await apiCreateFolder(docId, name);
-  return {
-    id: String(apiFolder.id),
-    name: apiFolder.name,
-    createdAt: new Date(apiFolder.createdAt).getTime(),
-    contents: [],
-  };
+  try {
+    const folder = await apiCreateFolder(docId, name);
+    return folder;
+  } catch (error) {
+    console.error("❌ createFolder: API create failed", error);
+    throw error;
+  }
 }
 
 /**
@@ -140,28 +149,74 @@ export async function renameFolder(docId: number, folderId: string, name: string
 export async function deleteFolder(docId: number, folderId: string): Promise<void> {
   await ensureMigrated(docId);
   
-  // Database-only - throw error if API fails
-  await apiDeleteFolder(parseInt(folderId, 10));
+  try {
+    await apiDeleteFolder(parseInt(folderId, 10));
+  } catch (error) {
+    console.error("❌ deleteFolder: API delete failed", error);
+    throw error;
+  }
 }
 
 /**
- * Load folder map (segment_id -> folder_id) from API (database-first)
- * Read fallback to localStorage ONLY if API fails (read-only)
+ * Helper function to filter folders that have at least one item (segment or chunk)
+ * This ensures empty folders (where all chunks were deleted) don't appear in the dropdown
  */
-export async function loadFolderMap(docId: number): Promise<Record<string, string>> {
+export function filterFoldersWithItems(
+  folders: FolderDTO[],
+  folderMap: Record<string, string>
+): FolderDTO[] {
+  return folders.filter(folder => {
+    // Check if this folder has any items (segments or chunks) in the folderMap
+    const folderId = folder.id;
+    return Object.values(folderMap).some(mappedFolderId => mappedFolderId === folderId);
+  });
+}
+
+/**
+ * Load folder map (segment_id -> folder_id, chunk:chunkId -> folder_id) from API (database-first)
+ * Read fallback to localStorage ONLY if API fails (read-only)
+ * 
+ * The folderMap maps:
+ * - segmentId -> folderId (for regular segments)
+ * - chunk:chunkId -> folderId (for duplicated chunks)
+ */
+export async function loadFolderMap(docId: number, skipCache: boolean = false): Promise<Record<string, string>> {
   await ensureMigrated(docId);
+  
+  // If skipCache is true, clear cache before loading
+  if (skipCache) {
+    const { apiCache } = await import("./cache");
+    const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+    // Clear all folder-related caches - including individual folder caches
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+    apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+  }
   
   try {
     const folders = await listFolders(docId);
     const map: Record<string, string> = {};
     
-    // Load items for each folder to build the map
+    // Load items for each folder to build map
+    // Clear individual folder cache before each getFolder call if skipCache is true
     for (const folder of folders) {
       try {
+        if (skipCache) {
+          // Clear this specific folder's cache before fetching to ensure fresh data
+          const { apiCache } = await import("./cache");
+          const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+          apiCache.delete(`cache:${API_BASE}/api/workspace/folders/${folder.id}`);
+        }
         const folderWithItems = await getFolder(folder.id);
         for (const item of folderWithItems.items) {
+          // Map segmentId to folderId (for regular segments)
           if (item.segmentId) {
             map[String(item.segmentId)] = String(folder.id);
+          }
+          // Also map chunkId to folderId (for duplicated chunks)
+          // We use a special prefix to distinguish chunks from segments
+          if (item.chunkId) {
+            map[`chunk:${item.chunkId}`] = String(folder.id);
           }
         }
       } catch (error) {
@@ -291,12 +346,21 @@ export async function removeChunkFromFolder(
 ): Promise<void> {
   await ensureMigrated(docId);
   
-  // Database-only - throw error if API fails
-  const folderWithItems = await getFolder(parseInt(folderId, 10));
-  const item = folderWithItems.items.find(i => i.chunkId === chunkId);
-  if (item) {
-    await deleteFolderItem(item.id);
-  } else {
-    throw new Error(`Chunk ${chunkId} not found in folder ${folderId}`);
+  // Database-only - handle gracefully if chunk not found (may have been already deleted)
+  try {
+    const folderWithItems = await getFolder(parseInt(folderId, 10));
+    const item = folderWithItems.items.find(i => i.chunkId === chunkId);
+    if (item) {
+      await deleteFolderItem(item.id);
+    } else {
+      // Chunk not found - may have been already deleted, just return (no-op)
+      // This is not an error condition - the chunk is already removed
+      return;
+    }
+  } catch (error) {
+    // If folder doesn't exist or other error, log but don't throw
+    // The chunk removal is idempotent - if it's already gone, that's fine
+    console.warn(`Failed to remove chunk ${chunkId} from folder ${folderId}:`, error);
+    return;
   }
 }

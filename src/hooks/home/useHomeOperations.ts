@@ -59,7 +59,7 @@ export interface HomeOperations {
 
 export function useHomeOperations(
   state: HomeState,
-  setLoading: (key: string, loading: boolean) => void,
+  _setLoading: (key: string, loading: boolean) => void,
   uploadWithProgress: (file: File) => Promise<UploadResponseDTO>,
   resetUpload: () => void,
   uploadError: string | null,
@@ -77,7 +77,6 @@ export function useHomeOperations(
     setModeFilter,
     setSegments,
     setQuery,
-    uploads,
     selectedUpload,
     openSeg,
     setCopied,
@@ -90,15 +89,23 @@ export function useHomeOperations(
 
     if (data) {
       // Handle both old array format and new paginated format
-      if (Array.isArray(data)) {
-        setUploads(data);
-      } else {
-        setUploads(data.items || []);
+      const items = Array.isArray(data) ? data : (data.items || []);
+      setUploads(items);
+      
+      // After updating uploads, ensure documentId is still valid
+      // This helps when returning from workspace
+      const currentDocId = state.documentId;
+      if (currentDocId) {
+        const upload = items.find((u: any) => u.documentId === currentDocId);
+        if (!upload) {
+          // Document no longer exists, clear selection
+          state.setDocumentId(null);
+        }
       }
     } else {
       setStatus("Failed to load uploads");
     }
-  }, [executeFetch, setUploads, setStatus]);
+  }, [executeFetch, setUploads, setStatus, state]);
 
   const loadSegmentationSummary = useCallback(
     async (docId: number) => {
@@ -150,10 +157,26 @@ export function useHomeOperations(
       }
 
       const newDocumentId = data.documentId || null;
-      setDocumentId(newDocumentId);
       
-      // Immediately fetch uploads to update the list
+      // Immediately fetch uploads to update the list BEFORE setting documentId
+      // This ensures selectedUpload is computed correctly
       await fetchUploads();
+      
+      // Now set documentId after uploads are loaded
+      if (newDocumentId) {
+        setDocumentId(newDocumentId);
+        
+        // Force a state update by setting documentId and then triggering uploads fetch again
+        setTimeout(async () => {
+          await fetchUploads();
+          // After setting documentId and fetching uploads, trigger a re-evaluation
+          // This ensures canSegment is computed correctly
+          if (state.documentId === newDocumentId) {
+            // Force re-render by setting documentId again
+            state.setDocumentId(newDocumentId);
+          }
+        }, 200);
+      }
 
       // After fetching uploads, check parseStatus and poll if needed
       if (newDocumentId) {
@@ -168,6 +191,10 @@ export function useHomeOperations(
         if (latestData) {
           const items = Array.isArray(latestData) ? latestData : (latestData.items || []);
           setUploads(items);
+          // Ensure documentId is set after uploads are loaded
+          if (newDocumentId && !state.documentId) {
+            state.setDocumentId(newDocumentId);
+          }
           const upload = items.find((u: any) => u.documentId === newDocumentId);
           
           if (upload) {

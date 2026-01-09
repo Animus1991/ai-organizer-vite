@@ -32,5 +32,5 @@ api_router.include_router(documents_router, tags=["documents"])
 # ✅ /api/search
 api_router.include_router(search_router, tags=["search"])
 
-# ✅ /api/folders, /api/smart-notes, /api/documents/{id}/note, /api/documents/{id}/migrate-localstorage
-api_router.include_router(workspace_router, tags=["workspace"])
+# ✅ /api/workspace/* (folders, smart-notes, document notes, migration)
+api_router.include_router(workspace_router, prefix="/workspace", tags=["workspace"])

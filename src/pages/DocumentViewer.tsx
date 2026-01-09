@@ -536,7 +536,7 @@ export default function DocumentViewer() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  const menu = document.getElementById('export-menu');
+                  const menu = window.document.getElementById('export-menu');
                   if (menu) {
                     menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
                   }
@@ -595,7 +595,7 @@ export default function DocumentViewer() {
                 <button
                   onClick={() => {
                     handleExport('json');
-                    const menu = document.getElementById('export-menu');
+                    const menu = window.document.getElementById('export-menu');
                     if (menu) menu.style.display = 'none';
                   }}
                   style={{
@@ -622,7 +622,7 @@ export default function DocumentViewer() {
                 <button
                   onClick={() => {
                     handleExport('txt');
-                    const menu = document.getElementById('export-menu');
+                    const menu = window.document.getElementById('export-menu');
                     if (menu) menu.style.display = 'none';
                   }}
                   style={{
@@ -649,7 +649,7 @@ export default function DocumentViewer() {
                 <button
                   onClick={() => {
                     handleExport('md');
-                    const menu = document.getElementById('export-menu');
+                    const menu = window.document.getElementById('export-menu');
                     if (menu) menu.style.display = 'none';
                   }}
                   style={{
