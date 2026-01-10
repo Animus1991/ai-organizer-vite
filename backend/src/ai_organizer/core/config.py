@@ -36,6 +36,10 @@ class Settings:
     AIORG_RETENTION_DAYS: int = field(default_factory=lambda: int(os.getenv("AIORG_RETENTION_DAYS", "30")))
     AIORG_PURGE_ENABLED: bool = field(default_factory=lambda: os.getenv("AIORG_PURGE_ENABLED", "true").lower() == "true")
     AIORG_PURGE_INTERVAL_HOURS: int = field(default_factory=lambda: int(os.getenv("AIORG_PURGE_INTERVAL_HOURS", "24")))
+    
+    # P4-2: AI Provider Configuration (loaded dynamically via ai.config.get_ai_config())
+    # Note: AI configuration is managed separately in ai_organizer.ai.config
+    # This keeps Settings focused on core app settings
 
     # Filled in __post_init__
     AIORG_DATA_DIR: Path = field(init=False)
