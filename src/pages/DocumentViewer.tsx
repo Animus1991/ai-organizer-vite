@@ -36,11 +36,15 @@ export default function DocumentViewer() {
   useEffect(() => {
     if (!documentId || !user) return;
 
+    // Reset document state when documentId changes to prevent showing stale data
+    setDocument(null);
+
     const loadDocument = async () => {
       const doc = await execute(async () => {
         return await getDocument(Number(documentId));
       });
       
+      // Only set document if we got a valid result (not null from error)
       if (doc) {
         setDocument(doc);
       }
@@ -116,7 +120,11 @@ export default function DocumentViewer() {
     }
   };
 
-  if (loading) {
+  // Show loading state if we're actively loading OR if we don't have a document yet and haven't encountered an error
+  // This prevents the "Document not found" flash during initial load
+  // IMPORTANT: Check loading first, then check if document exists
+  // If loading is false but document is null and no error, we're still in initial state (show loading)
+  if (loading || (!document && !error && documentId)) {
     return (
       <div
         className="min-h-screen flex items-center justify-center"
@@ -146,7 +154,10 @@ export default function DocumentViewer() {
     );
   }
 
-  if (error || !document) {
+  // Only show error state if we've finished loading AND there's an actual error, OR document is null after loading completes
+  // IMPORTANT: Must check !loading first to ensure we've actually attempted to load
+  // Also check documentId exists to avoid showing error on initial mount
+  if (!loading && documentId && (error || !document)) {
     return (
       <div
         className="min-h-screen flex items-center justify-center"

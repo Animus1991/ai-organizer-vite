@@ -69,23 +69,23 @@ export default function FolderManagerDrawer({ docId, open, onClose, folders: fol
     if (foldersProp === undefined) {
       setLocalFolders(f);
     }
-    // Notify parent component immediately (await if it's async)
-    if (onChanged) {
+    // P1-1 FIX: Notify parent component ONLY if controlled (foldersProp is provided)
+    // For controlled components, parent manages state, so we notify on actual changes
+    // For uncontrolled components, we only update local state (above), no parent notification
+    if (onChanged && foldersProp !== undefined) {
+      // Controlled component - notify parent so it can update its state
+      // NOTE: onChanged should NOT dispatch folder-chunk-updated to avoid loops
       await onChanged(f);
     }
     // Note: refreshKey is handled by parent component
+    // NOTE: Do NOT dispatch folder-chunk-updated here - it causes infinite loops
   }
 
-  // Listen for folder-chunk-updated events to refresh folder list
-  useEffect(() => {
-    const handleFolderChunkUpdated = () => {
-      refresh();
-    };
-    window.addEventListener('folder-chunk-updated', handleFolderChunkUpdated);
-    return () => {
-      window.removeEventListener('folder-chunk-updated', handleFolderChunkUpdated);
-    };
-  }, [docId, onChanged]);
+  // P1-1 FIX: Removed auto-refresh on folder-chunk-updated events to prevent infinite loops
+  // The parent component (DocumentWorkspace) handles state updates directly after mutations
+  // This component only needs to refresh when explicitly called (create/rename/delete folder)
+  // NOTE: If we need to listen for external changes, we should use a debounced/throttled approach
+  // For now, disabled to prevent loops - parent handles all state updates
 
   async function handleCreateFolder() {
     if (!canAdd) return;

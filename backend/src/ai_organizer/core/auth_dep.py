@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlmodel import Session, select
 
+from ai_organizer.api.errors import unauthorized
 from ai_organizer.core.db import engine
 from ai_organizer.core.security import decode_token
 from ai_organizer.models import User
@@ -20,13 +21,16 @@ def get_db() -> Generator[Session, None, None]:
         yield session
 
 
-def _unauthorized(detail: str = "Not authenticated") -> HTTPException:
+def _unauthorized(detail: str = "Not authenticated", details: dict | None = None) -> HTTPException:
     # WWW-Authenticate: Bearer είναι σημαντικό (το βλέπεις και στα response headers).
-    return HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=detail,
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    # Use standard error helper but preserve WWW-Authenticate header
+    exc = unauthorized(detail, details=details)
+    # HTTPException.headers is a dict, merge with WWW-Authenticate
+    if exc.headers:
+        exc.headers["WWW-Authenticate"] = "Bearer"
+    else:
+        exc.headers = {"WWW-Authenticate": "Bearer"}
+    return exc
 
 
 def get_current_user(

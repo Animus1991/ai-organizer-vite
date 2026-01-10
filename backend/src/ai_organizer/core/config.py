@@ -32,6 +32,11 @@ class Settings:
     AIORG_ACCESS_MINUTES: int = field(default_factory=lambda: int(os.getenv("AIORG_ACCESS_MINUTES", "30")))
     AIORG_REFRESH_DAYS: int = field(default_factory=lambda: int(os.getenv("AIORG_REFRESH_DAYS", "14")))
 
+    # P3: Retention Policy Configuration
+    AIORG_RETENTION_DAYS: int = field(default_factory=lambda: int(os.getenv("AIORG_RETENTION_DAYS", "30")))
+    AIORG_PURGE_ENABLED: bool = field(default_factory=lambda: os.getenv("AIORG_PURGE_ENABLED", "true").lower() == "true")
+    AIORG_PURGE_INTERVAL_HOURS: int = field(default_factory=lambda: int(os.getenv("AIORG_PURGE_INTERVAL_HOURS", "24")))
+
     # Filled in __post_init__
     AIORG_DATA_DIR: Path = field(init=False)
     AIORG_UPLOAD_DIR: Path = field(init=False)

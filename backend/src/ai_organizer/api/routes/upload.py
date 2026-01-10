@@ -11,6 +11,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status,
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from ai_organizer.api.errors import validation_error, create_error_response
 from ai_organizer.core.config import settings
 from ai_organizer.core.db import engine
 from ai_organizer.core.auth_dep import get_current_user
@@ -238,28 +239,20 @@ async def upload(
     user: User = Depends(get_current_user),
 ):
     if not file or not file.filename:
-        raise HTTPException(status_code=400, detail="Missing filename")
+        raise validation_error("Missing filename", details={"field": "file"})
 
     # File type validation - return 422 for unsupported types
     ext = Path(file.filename).suffix.lower()
     if ext in UNSUPPORTED_DOC_EXTS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=UploadError(
-                code="unsupported_file_type",
-                message=f"Unsupported .doc file. Please upload .docx instead.",
-                supported_extensions=sorted(SUPPORTED_EXTS)
-            ).dict()
+        raise validation_error(
+            "Unsupported .doc file. Please upload .docx instead.",
+            details={"extension": ext, "supported_extensions": sorted(SUPPORTED_EXTS), "unsupported_extensions": list(UNSUPPORTED_DOC_EXTS)}
         )
     
     if ext not in SUPPORTED_EXTS:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=UploadError(
-                code="unsupported_file_type",
-                message=f"Unsupported file type: {ext}",
-                supported_extensions=sorted(SUPPORTED_EXTS)
-            ).dict()
+        raise validation_error(
+            f"Unsupported file type: {ext}",
+            details={"extension": ext, "supported_extensions": sorted(SUPPORTED_EXTS)}
         )
 
     upload_dir: Path = settings.AIORG_UPLOAD_DIR
@@ -273,7 +266,12 @@ async def upload(
         with target.open("wb") as out:
             shutil.copyfileobj(file.file, out)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to store file: {e}")
+        raise create_error_response(
+            code="internal_server_error",
+            message=f"Failed to store file: {str(e)}",
+            status_code=500,
+            details={"filename": file.filename, "error": str(e)}
+        )
     finally:
         try:
             file.file.close()

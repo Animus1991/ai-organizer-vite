@@ -10,6 +10,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
 from sqlmodel import Session, select
 
+from ai_organizer.api.errors import create_error_response, conflict, unauthorized
 from ai_organizer.core.auth_dep import get_db, get_current_user
 from ai_organizer.core.security import (
     hash_password,
@@ -68,15 +69,15 @@ def _decode_refresh_or_401(token: str) -> dict[str, Any]:
         data = decode_token(token)
     except Exception:
         # (ValueError/JWTError/etc.) → πάντα 401 προς τα έξω
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        raise unauthorized("Invalid refresh token", details={"reason": "token_decode_failed"})
 
     if data.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
+        raise unauthorized("Invalid token type", details={"expected": "refresh", "actual": data.get("type")})
 
     sub = data.get("sub")
     jti = data.get("jti")
     if not sub or not jti:
-        raise HTTPException(status_code=401, detail="Malformed refresh token")
+        raise unauthorized("Malformed refresh token", details={"missing_fields": ["sub", "jti"] if not sub and not jti else (["sub"] if not sub else ["jti"])})
 
     return data
 
@@ -88,7 +89,7 @@ def _decode_refresh_or_401(token: str) -> dict[str, Any]:
 def register(payload: RegisterIn, session: Session = Depends(get_db)) -> RegisterOut:
     existing = session.exec(select(User).where(User.email == payload.email)).first()
     if existing:
-        raise HTTPException(status_code=409, detail="Email already registered")
+        raise conflict("Email already registered", details={"email": payload.email})
 
     user = User(email=payload.email, password_hash=hash_password(payload.password))
     session.add(user)
@@ -107,10 +108,7 @@ def login(
     # Εδώ: username == email
     user = session.exec(select(User).where(User.email == form.username)).first()
     if not user or not verify_password(form.password, user.password_hash):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-        )
+        raise unauthorized("Invalid credentials", details={"reason": "invalid_email_or_password"})
 
     access = create_access_token(subject=user.email, extra={"uid": user.id})
     refresh, jti, expires_at = create_refresh_token(subject=user.email)
@@ -138,16 +136,16 @@ def refresh(payload: RefreshIn, session: Session = Depends(get_db)) -> TokenOut:
     # DB validation: exists + not revoked
     rt = session.exec(select(RefreshToken).where(RefreshToken.jti == jti)).first()
     if not rt or rt.revoked:
-        raise HTTPException(status_code=401, detail="Refresh token revoked/unknown")
+        raise unauthorized("Refresh token revoked/unknown", details={"jti": jti, "reason": "revoked" if rt and rt.revoked else "not_found"})
 
     # DB expiry as source of truth
     db_exp = _ensure_utc(rt.expires_at)
     if db_exp < datetime.now(timezone.utc):
-        raise HTTPException(status_code=401, detail="Refresh token expired")
+        raise unauthorized("Refresh token expired", details={"jti": jti, "expires_at": rt.expires_at.isoformat() if rt.expires_at else None})
 
     user = session.exec(select(User).where(User.email == email)).first()
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise unauthorized("User not found", details={"email": email})
 
     # Rotation: revoke old refresh, issue new
     rt.revoked = True

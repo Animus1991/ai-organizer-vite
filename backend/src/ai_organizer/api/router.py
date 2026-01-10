@@ -8,6 +8,7 @@ from ai_organizer.api.routes.upload_delete import router as upload_delete_router
 from ai_organizer.api.routes.documents import router as documents_router  # ✅ add
 from ai_organizer.api.routes.search import router as search_router
 from ai_organizer.api.routes.workspace import router as workspace_router
+from ai_organizer.api.routes.recycle_bin import router as recycle_bin_router  # P3: recycle bin
 
 api_router = APIRouter()
 
@@ -34,3 +35,6 @@ api_router.include_router(search_router, tags=["search"])
 
 # ✅ /api/workspace/* (folders, smart-notes, document notes, migration)
 api_router.include_router(workspace_router, prefix="/workspace", tags=["workspace"])
+
+# P3: /api/recycle-bin/* (soft delete, restore, purge)
+api_router.include_router(recycle_bin_router, prefix="/recycle-bin", tags=["recycle-bin"])

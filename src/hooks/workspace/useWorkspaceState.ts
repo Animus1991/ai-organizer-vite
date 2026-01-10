@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import type { SegmentDTO, SegmentsListMeta, SegmentationSummary } from "../../lib/api";
+import type { SegmentDTO, SegmentsListMeta, SegmentationSummary, SegmentType, EvidenceGrade } from "../../lib/api";
 import type { FolderDTO } from "../../lib/segmentFolders";
 import type { SourceFilter } from "../../components/workspace";
 import type { SelInfo } from "../../lib/documentWorkspace/selection";
@@ -43,6 +43,18 @@ export interface WorkspaceState {
   setMaxLength: (length: number | undefined) => void;
   activePreset: string;
   setActivePreset: (preset: string) => void;
+  
+  // Semantic Search Options
+  semanticSearch: boolean;
+  setSemanticSearch: (enabled: boolean) => void;
+  searchLanguage: "auto" | "el" | "en";
+  setSearchLanguage: (lang: "auto" | "el" | "en") => void;
+  expandVariations: boolean;
+  setExpandVariations: (enabled: boolean) => void;
+  synonymsManagerOpen: boolean;
+  setSynonymsManagerOpen: (open: boolean) => void;
+  searchModalOpen: boolean;
+  setSearchModalOpen: (open: boolean) => void;
 
   // Selection / viewer
   selectedSegId: number | null;
@@ -94,6 +106,13 @@ export interface WorkspaceState {
   chunkEditPreRef: React.RefObject<HTMLPreElement | null>;
   chunkEditSyncFromDoc: boolean;
   setChunkEditSyncFromDoc: (sync: boolean) => void;
+  // P2: Research-Grade Fields
+  chunkEditSegmentType: SegmentType | null;
+  setChunkEditSegmentType: (type: SegmentType | null) => void;
+  chunkEditEvidenceGrade: EvidenceGrade | null;
+  setChunkEditEvidenceGrade: (grade: EvidenceGrade | null) => void;
+  chunkEditFalsifiabilityCriteria: string;
+  setChunkEditFalsifiabilityCriteria: (criteria: string) => void;
 
   // Document edit modal
   docEditOpen: boolean;
@@ -216,6 +235,13 @@ export function useWorkspaceState(docId: number, initialFilename?: string | null
   const [minLength, setMinLength] = useState<number | undefined>(undefined);
   const [maxLength, setMaxLength] = useState<number | undefined>(undefined);
   const [activePreset, setActivePreset] = useState<string>("all");
+  
+  // Semantic Search Options
+  const [semanticSearch, setSemanticSearch] = useState(false);
+  const [searchLanguage, setSearchLanguage] = useState<"auto" | "el" | "en">("auto");
+  const [expandVariations, setExpandVariations] = useState(true);
+  const [synonymsManagerOpen, setSynonymsManagerOpen] = useState(false);
+  const [searchModalOpen, setSearchModalOpen] = useState(false);
 
   // Selection / viewer
   const [selectedSegId, setSelectedSegId] = useState<number | null>(null);
@@ -249,6 +275,10 @@ export function useWorkspaceState(docId: number, initialFilename?: string | null
   const [chunkEditFolderId, setChunkEditFolderId] = useState<string | null>(null);
   const chunkEditPreRef = useRef<HTMLPreElement | null>(null);
   const [chunkEditSyncFromDoc, setChunkEditSyncFromDoc] = useState(true);
+  // P2: Research-Grade Fields
+  const [chunkEditSegmentType, setChunkEditSegmentType] = useState<SegmentType | null>(null);
+  const [chunkEditEvidenceGrade, setChunkEditEvidenceGrade] = useState<EvidenceGrade | null>(null);
+  const [chunkEditFalsifiabilityCriteria, setChunkEditFalsifiabilityCriteria] = useState<string>("");
 
   // Document edit modal
   const [docEditOpen, setDocEditOpen] = useState(false);
@@ -347,6 +377,18 @@ export function useWorkspaceState(docId: number, initialFilename?: string | null
     setMaxLength,
     activePreset,
     setActivePreset,
+    
+    // Semantic Search Options
+    semanticSearch,
+    setSemanticSearch,
+    searchLanguage,
+    setSearchLanguage,
+    expandVariations,
+    setExpandVariations,
+    synonymsManagerOpen,
+    setSynonymsManagerOpen,
+    searchModalOpen,
+    setSearchModalOpen,
 
     // Selection / viewer
     selectedSegId,
@@ -398,6 +440,13 @@ export function useWorkspaceState(docId: number, initialFilename?: string | null
     chunkEditPreRef,
     chunkEditSyncFromDoc,
     setChunkEditSyncFromDoc,
+    // P2: Research-Grade Fields
+    chunkEditSegmentType,
+    setChunkEditSegmentType,
+    chunkEditEvidenceGrade,
+    setChunkEditEvidenceGrade,
+    chunkEditFalsifiabilityCriteria,
+    setChunkEditFalsifiabilityCriteria,
 
     // Document edit modal
     docEditOpen,

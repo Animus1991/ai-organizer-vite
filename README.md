@@ -51,6 +51,13 @@ A modern document management and organization system with intelligent segmentati
    cd backend
    .\scripts\dev_bootstrap.ps1
    ```
+   
+   **Note:** The bootstrap script automatically runs `alembic upgrade head` to apply database migrations.
+   If starting the server manually, ensure migrations are applied first:
+   ```bash
+   cd backend
+   alembic upgrade head
+   ```
 
 ### Development
 

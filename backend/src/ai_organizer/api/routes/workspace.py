@@ -10,14 +10,36 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlmodel import Session, select
+from sqlalchemy import func
 
+from ai_organizer.api.errors import not_found, forbidden, conflict, create_error_response
 from ai_organizer.core.db import engine
 from ai_organizer.core.auth_dep import get_current_user, get_db
 from ai_organizer.models import (
     User, Document, Folder, FolderItem, SmartNote, DocumentNote, Segment
 )
+from sqlalchemy import inspect
 
 router = APIRouter()
+
+
+# P3: Helper function to check if deleted_at column exists
+def _has_p3_soft_delete_fields() -> bool:
+    """Check if P3 soft delete columns (deleted_at) exist in tables"""
+    try:
+        inspector = inspect(engine)
+        tables = set(inspector.get_table_names())
+        
+        if "documents" not in tables or "folders" not in tables:
+            return False
+        
+        # Check if deleted_at column exists in documents and folders tables
+        doc_cols = [c["name"] for c in inspector.get_columns("documents")]
+        folder_cols = [c["name"] for c in inspector.get_columns("folders")]
+        return "deleted_at" in doc_cols and "deleted_at" in folder_cols
+    except Exception:
+        # If inspection fails, assume fields don't exist (safe fallback)
+        return False
 
 
 # ============================================================================
@@ -78,19 +100,24 @@ def list_folders(
     session: Session = Depends(get_db),
 ):
     """List all folders for a document"""
-    # Verify document belongs to user
-    doc = session.exec(
-        select(Document).where(Document.id == document_id, Document.user_id == user.id)
-    ).first()
+    # Verify document belongs to user with P3 soft delete filtering
+    query = select(Document).where(Document.id == document_id, Document.user_id == user.id)
+    if _has_p3_soft_delete_fields():
+        query = query.where(Document.deleted_at.is_(None))
+    
+    doc = session.exec(query).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
-    folders = session.exec(
-        select(Folder).where(
-            Folder.document_id == document_id,
-            Folder.user_id == user.id
-        )
-    ).all()
+    # List folders with P3 soft delete filtering
+    folder_query = select(Folder).where(
+        Folder.document_id == document_id,
+        Folder.user_id == user.id
+    )
+    if _has_p3_soft_delete_fields():
+        folder_query = folder_query.where(Folder.deleted_at.is_(None))
+    
+    folders = session.exec(folder_query).all()
 
     result = []
     for folder in folders:
@@ -115,11 +142,14 @@ def get_folder(
     session: Session = Depends(get_db),
 ):
     """Get a folder with its items"""
-    folder = session.exec(
-        select(Folder).where(Folder.id == folder_id, Folder.user_id == user.id)
-    ).first()
+    # Get folder with P3 soft delete filtering
+    query = select(Folder).where(Folder.id == folder_id, Folder.user_id == user.id)
+    if _has_p3_soft_delete_fields():
+        query = query.where(Folder.deleted_at.is_(None))
+    
+    folder = session.exec(query).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise not_found("Folder", str(folder_id))
 
     items = session.exec(
         select(FolderItem).where(FolderItem.folder_id == folder_id)
@@ -161,7 +191,7 @@ def create_folder(
         select(Document).where(Document.id == payload.documentId, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     folder = Folder(
         user_id=user.id,
@@ -194,7 +224,7 @@ def update_folder(
         select(Folder).where(Folder.id == folder_id, Folder.user_id == user.id)
     ).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise not_found("Folder", str(folder_id))
 
     folder.name = name.strip()
     session.add(folder)
@@ -220,24 +250,37 @@ def delete_folder(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
-    """Delete a folder and all its items"""
+    """
+    Soft delete a folder (move to recycle bin).
+    P3: Uses soft delete (deleted_at) instead of hard delete.
+    """
     folder = session.exec(
         select(Folder).where(Folder.id == folder_id, Folder.user_id == user.id)
     ).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
-
-    # Delete all items first (cascade should handle this, but explicit is better)
-    items = session.exec(
-        select(FolderItem).where(FolderItem.folder_id == folder_id)
-    ).all()
-    for item in items:
-        session.delete(item)
-
-    session.delete(folder)
-    session.commit()
-
-    return {"ok": True}
+        raise not_found("Folder", str(folder_id))
+    
+    # Check if already soft-deleted
+    if _has_p3_soft_delete_fields() and folder.deleted_at:
+        return {"ok": True, "message": "Folder already deleted", "deletedAt": folder.deleted_at.isoformat()}
+    
+    # P3: Soft delete instead of hard delete
+    if _has_p3_soft_delete_fields():
+        folder.deleted_at = datetime.utcnow()
+        session.commit()
+        return {"ok": True, "deletedAt": folder.deleted_at.isoformat()}
+    else:
+        # Fallback to hard delete if soft delete not available
+        # Delete all items first (cascade should handle this, but explicit is better)
+        items = session.exec(
+            select(FolderItem).where(FolderItem.folder_id == folder_id)
+        ).all()
+        for item in items:
+            session.delete(item)
+        
+        session.delete(folder)
+        session.commit()
+        return {"ok": True, "hardDelete": True}
 
 
 @router.post("/folder-items", response_model=FolderItemOut)
@@ -252,7 +295,7 @@ def create_folder_item(
         select(Folder).where(Folder.id == payload.folderId, Folder.user_id == user.id)
     ).first()
     if not folder:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise not_found("Folder", str(payload.folderId))
 
     # If segment_id is provided, verify it exists and belongs to user's document
     if payload.segmentId:
@@ -260,13 +303,13 @@ def create_folder_item(
             select(Segment).where(Segment.id == payload.segmentId)
         ).first()
         if not segment:
-            raise HTTPException(status_code=404, detail="Segment not found")
+            raise not_found("Segment", str(payload.segmentId))
         
         doc = session.exec(
             select(Document).where(Document.id == segment.document_id, Document.user_id == user.id)
         ).first()
         if not doc:
-            raise HTTPException(status_code=403, detail="Segment does not belong to user")
+            raise forbidden("Segment does not belong to user", details={"segmentId": payload.segmentId, "userId": user.id})
 
     # Check if item already exists
     if payload.segmentId:
@@ -277,7 +320,7 @@ def create_folder_item(
             )
         ).first()
         if existing:
-            raise HTTPException(status_code=409, detail="Item already in folder")
+            raise conflict("Item already in folder", details={"folderId": payload.folderId, "itemType": "segment" if payload.segmentId else "chunk"})
     elif payload.chunkId:
         existing = session.exec(
             select(FolderItem).where(
@@ -286,7 +329,7 @@ def create_folder_item(
             )
         ).first()
         if existing:
-            raise HTTPException(status_code=409, detail="Item already in folder")
+            raise conflict("Item already in folder", details={"folderId": payload.folderId, "itemType": "segment" if payload.segmentId else "chunk"})
 
     item = FolderItem(
         folder_id=payload.folderId,
@@ -323,22 +366,48 @@ def delete_folder_item(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_db),
 ):
-    """Remove an item from a folder"""
+    """
+    Remove an item from a folder.
+    
+    Architecture: If the folder becomes empty after deletion, it is automatically deleted.
+    This ensures that empty folders never persist in the database, simplifying UI state management.
+    """
     item = session.exec(select(FolderItem).where(FolderItem.id == item_id)).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Folder item not found")
+        raise not_found("Folder item", str(item_id))
 
     # Verify folder belongs to user
     folder = session.exec(
         select(Folder).where(Folder.id == item.folder_id, Folder.user_id == user.id)
     ).first()
     if not folder:
-        raise HTTPException(status_code=403, detail="Folder does not belong to user")
+        raise forbidden("Folder does not belong to user", details={"folderId": item.folder_id, "userId": user.id})
 
+    # Store folder_id before deletion (needed for response)
+    folder_id = folder.id
+
+    # Delete the item
     session.delete(item)
     session.commit()
 
-    return {"ok": True}
+    # Check if folder is now empty (after deletion)
+    # Use .one() for count queries (SQLModel/SQLAlchemy pattern - returns int directly)
+    remaining_items_count = session.exec(
+        select(func.count(FolderItem.id)).where(FolderItem.folder_id == folder_id)
+    ).one() or 0
+
+    folder_deleted = False
+    if remaining_items_count == 0:
+        # Folder is empty - auto-delete it
+        session.delete(folder)
+        session.commit()
+        folder_deleted = True
+
+    return {
+        "ok": True,
+        "folder_deleted": folder_deleted,
+        "folder_id": folder_id if folder_deleted else None,
+    }
 
 
 # ============================================================================
@@ -392,7 +461,7 @@ def list_smart_notes(
         select(Document).where(Document.id == document_id, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     notes = session.exec(
         select(SmartNote).where(
@@ -436,7 +505,7 @@ def create_smart_note(
         select(Document).where(Document.id == payload.documentId, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     # If chunk_id is provided, verify it exists
     if payload.chunkId:
@@ -444,7 +513,7 @@ def create_smart_note(
             select(Segment).where(Segment.id == payload.chunkId)
         ).first()
         if not segment or segment.document_id != payload.documentId:
-            raise HTTPException(status_code=404, detail="Chunk not found")
+            raise not_found("Chunk", chunk_id)
 
     note = SmartNote(
         user_id=user.id,
@@ -493,7 +562,7 @@ def update_smart_note(
         select(SmartNote).where(SmartNote.id == note_id, SmartNote.user_id == user.id)
     ).first()
     if not note:
-        raise HTTPException(status_code=404, detail="Smart note not found")
+        raise not_found("Smart note", str(note_id))
 
     if payload.content is not None:
         note.content = payload.content
@@ -511,7 +580,7 @@ def update_smart_note(
                 select(Segment).where(Segment.id == payload.chunkId)
             ).first()
             if not segment or segment.document_id != note.document_id:
-                raise HTTPException(status_code=404, detail="Chunk not found")
+                raise not_found("Chunk", chunk_id)
         note.chunk_id = payload.chunkId
 
     note.updated_at = datetime.utcnow()
@@ -549,7 +618,7 @@ def delete_smart_note(
         select(SmartNote).where(SmartNote.id == note_id, SmartNote.user_id == user.id)
     ).first()
     if not note:
-        raise HTTPException(status_code=404, detail="Smart note not found")
+        raise not_found("Smart note", str(note_id))
 
     session.delete(note)
     session.commit()
@@ -590,7 +659,7 @@ def get_document_note(
         select(Document).where(Document.id == document_id, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     note = session.exec(
         select(DocumentNote).where(
@@ -625,7 +694,7 @@ def upsert_document_note(
         select(Document).where(Document.id == document_id, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     note = session.exec(
         select(DocumentNote).where(
@@ -678,7 +747,7 @@ def delete_document_note(
         )
     ).first()
     if not note:
-        raise HTTPException(status_code=404, detail="Document note not found")
+        raise not_found("Document note", str(note_id))
 
     session.delete(note)
     session.commit()
@@ -715,7 +784,7 @@ def migrate_localstorage_data(
         select(Document).where(Document.id == document_id, Document.user_id == user.id)
     ).first()
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise not_found("Document", str(document_id))
 
     imported = {
         "folders": 0,

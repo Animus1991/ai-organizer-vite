@@ -78,10 +78,13 @@ export async function loadFolders(docId: number, skipCache: boolean = false): Pr
   if (skipCache) {
     const { apiCache } = await import("./cache");
     const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
-    // Clear all folder-related caches - be thorough to avoid stale data
+    // Clear all folder-related caches - be extremely thorough to avoid stale data
+    // This is critical for foldering consistency after deletions
     apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/${docId}/folders`);
     apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
     apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+    // Also clear any potential folder-specific caches (individual folder GET calls)
+    // This ensures fresh data when loading folder map
   }
   
   try {
@@ -198,16 +201,14 @@ export async function loadFolderMap(docId: number, skipCache: boolean = false): 
     const map: Record<string, string> = {};
     
     // Load items for each folder to build map
-    // Clear individual folder cache before each getFolder call if skipCache is true
+    // ALWAYS use skipCache=true when loading folderMap to ensure fresh data
+    // This is critical to prevent stale data after deletions
     for (const folder of folders) {
       try {
-        if (skipCache) {
-          // Clear this specific folder's cache before fetching to ensure fresh data
-          const { apiCache } = await import("./cache");
-          const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
-          apiCache.delete(`cache:${API_BASE}/api/workspace/folders/${folder.id}`);
-        }
-        const folderWithItems = await getFolder(folder.id);
+        // Use skipCache=true to ensure we get the latest data, especially after deletions
+        // This clears cache before fetching, preventing stale data issues
+        const folderWithItems = await getFolder(folder.id, true); // skipCache=true for fresh data
+        
         for (const item of folderWithItems.items) {
           // Map segmentId to folderId (for regular segments)
           if (item.segmentId) {
@@ -220,7 +221,12 @@ export async function loadFolderMap(docId: number, skipCache: boolean = false): 
           }
         }
       } catch (error) {
-        console.warn(`Failed to load items for folder ${folder.id}:`, error);
+        // If folder doesn't exist or has no items, skip it (may have been auto-deleted)
+        // Don't log errors for 404s (folder may have been deleted by backend)
+        if ((error as any)?.message && !(error as any).message.includes('404')) {
+          console.warn(`Failed to load items for folder ${folder.id}:`, error);
+        }
+        continue;
       }
     }
     
@@ -262,7 +268,7 @@ export async function setSegmentFolder(
     const folders = await listFolders(docId);
     for (const folder of folders) {
       try {
-        const folderWithItems = await getFolder(folder.id);
+        const folderWithItems = await getFolder(folder.id, true); // skipCache=true for fresh data
         const item = folderWithItems.items.find(i => i.segmentId === segId);
         if (item) {
           await deleteFolderItem(item.id);
@@ -278,7 +284,7 @@ export async function setSegmentFolder(
     for (const folder of folders) {
       if (String(folder.id) !== folderId) {
         try {
-          const folderWithItems = await getFolder(folder.id);
+          const folderWithItems = await getFolder(folder.id, true); // skipCache=true for fresh data
           const item = folderWithItems.items.find(i => i.segmentId === segId);
           if (item) {
             await deleteFolderItem(item.id);
@@ -290,10 +296,24 @@ export async function setSegmentFolder(
     }
     
     // Then add to target folder (database-only)
-    await createFolderItem({
-      folderId: parseInt(folderId, 10),
-      segmentId: segId,
-    });
+    // Note: createFolderItem already handles 409 Conflict gracefully (returns existing item)
+    // So we can safely call it - if item already exists, it's treated as success (idempotent)
+    try {
+      await createFolderItem({
+        folderId: parseInt(folderId, 10),
+        segmentId: segId,
+      });
+    } catch (error: any) {
+      // Handle 409 Conflict gracefully - item already exists is not an error
+      // This is idempotent: if segment is already in folder, that's fine
+      if (error?.status === 409 || error?.response?.status === 409 || error?.message?.includes('409') || error?.message?.includes('already')) {
+        // Item already in folder - this is fine, treat as success (idempotent operation)
+        console.debug(`Segment ${segId} already in folder ${folderId}, skipping add (idempotent)`);
+        return;
+      }
+      // Re-throw other errors
+      throw error;
+    }
   }
 }
 
@@ -323,44 +343,69 @@ export async function addChunkToFolder(
 ): Promise<void> {
   await ensureMigrated(docId);
   
-  // Database-only - throw error if API fails
-  await createFolderItem({
-    folderId: parseInt(folderId, 10),
-    chunkId,
-    chunkTitle: chunkData?.title,
-    chunkContent: chunkData?.content,
-    chunkMode: chunkData?.mode,
-    chunkIsManual: chunkData?.isManual,
-    chunkOrderIndex: chunkData?.orderIndex,
-  });
+  // Database-only - createFolderItem handles 409 Conflict gracefully (returns existing item)
+  // So if chunk already exists in folder, it's treated as success (idempotent operation)
+  try {
+    await createFolderItem({
+      folderId: parseInt(folderId, 10),
+      chunkId,
+      chunkTitle: chunkData?.title,
+      chunkContent: chunkData?.content,
+      chunkMode: chunkData?.mode,
+      chunkIsManual: chunkData?.isManual,
+      chunkOrderIndex: chunkData?.orderIndex,
+    });
+  } catch (error: any) {
+    // Handle 409 Conflict gracefully - chunk already in folder is not an error
+    // This is idempotent: if chunk is already in folder, that's fine
+    if (error?.status === 409 || error?.response?.status === 409 || error?.message?.includes('409') || error?.message?.includes('already')) {
+      // Chunk already in folder - this is fine, treat as success (idempotent operation)
+      console.debug(`Chunk ${chunkId} already in folder ${folderId}, skipping add (idempotent)`);
+      return;
+    }
+    // Re-throw other errors
+    throw error;
+  }
 }
 
 /**
  * Remove a duplicated chunk from a folder via API (database-only)
+ * Returns DeleteFolderItemResponse to handle folder auto-deletion
  * Throws error if API fails - no localStorage fallback
  */
 export async function removeChunkFromFolder(
   docId: number,
   folderId: string,
   chunkId: string
-): Promise<void> {
+): Promise<{ folder_deleted: boolean; folder_id: number | null }> {
   await ensureMigrated(docId);
   
   // Database-only - handle gracefully if chunk not found (may have been already deleted)
   try {
-    const folderWithItems = await getFolder(parseInt(folderId, 10));
+    // Use skipCache=true to ensure fresh data when removing chunks
+    const folderWithItems = await getFolder(parseInt(folderId, 10), true);
     const item = folderWithItems.items.find(i => i.chunkId === chunkId);
     if (item) {
-      await deleteFolderItem(item.id);
+      const { deleteFolderItem } = await import("../lib/api");
+      const response = await deleteFolderItem(item.id);
+      // P1-1: Return folder_deleted status for proper UI handling
+      return {
+        folder_deleted: response.folder_deleted ?? false,
+        folder_id: response.folder_id ?? null,
+      };
     } else {
       // Chunk not found - may have been already deleted, just return (no-op)
       // This is not an error condition - the chunk is already removed
-      return;
+      return { folder_deleted: false, folder_id: null };
     }
   } catch (error) {
-    // If folder doesn't exist or other error, log but don't throw
+    // If folder doesn't exist (404) or other error, check if it was already deleted
     // The chunk removal is idempotent - if it's already gone, that's fine
+    if ((error as any)?.status === 404 || (error as any)?.response?.status === 404) {
+      // Folder may have been deleted - return folder_deleted=true
+      return { folder_deleted: true, folder_id: parseInt(folderId, 10) };
+    }
     console.warn(`Failed to remove chunk ${chunkId} from folder ${folderId}:`, error);
-    return;
+    throw error; // Re-throw other errors
   }
 }

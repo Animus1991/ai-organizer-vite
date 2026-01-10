@@ -15,6 +15,10 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Embedding cache
+.cache/
+**/.cache/
+
 # ------------------------------
 # Env files (ignore all, keep templates)
 # ------------------------------

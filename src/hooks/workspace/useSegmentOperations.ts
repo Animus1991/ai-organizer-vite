@@ -198,6 +198,11 @@ export function useSegmentOperations(
       const currentFolderId = state.folderMap[String(seg.id)] ?? null;
       state.setChunkEditFolderId(currentFolderId);
 
+      // P2: Initialize research-grade fields from segment
+      state.setChunkEditSegmentType(seg.segmentType ?? "untyped");
+      state.setChunkEditEvidenceGrade(seg.evidenceGrade ?? null);
+      state.setChunkEditFalsifiabilityCriteria(seg.falsifiabilityCriteria ?? "");
+
       state.setChunkEditDirty(false);
       state.setChunkEditStatus("");
       state.setChunkEditSyncFromDoc(true);
@@ -242,6 +247,25 @@ export function useSegmentOperations(
       if (Number.isFinite(state.chunkEditStart) && Number.isFinite(state.chunkEditEnd) && state.chunkEditEnd > state.chunkEditStart) {
         patch.start = state.chunkEditStart;
         patch.end = state.chunkEditEnd;
+      }
+
+      // P2: Include research-grade fields if provided
+      if (state.chunkEditSegmentType && state.chunkEditSegmentType !== "untyped") {
+        patch.segmentType = state.chunkEditSegmentType;
+      } else {
+        patch.segmentType = null; // Allow clearing type
+      }
+      
+      if (state.chunkEditEvidenceGrade) {
+        patch.evidenceGrade = state.chunkEditEvidenceGrade;
+      } else {
+        patch.evidenceGrade = null; // Allow clearing grade
+      }
+      
+      if (state.chunkEditFalsifiabilityCriteria.trim()) {
+        patch.falsifiabilityCriteria = state.chunkEditFalsifiabilityCriteria.trim();
+      } else {
+        patch.falsifiabilityCriteria = null; // Allow clearing criteria
       }
 
       const updated = await patchSegment(state.chunkEditSeg.id, patch);

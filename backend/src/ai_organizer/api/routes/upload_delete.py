@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 from sqlalchemy import delete as sa_delete
 
+from ai_organizer.api.errors import not_found
 from ai_organizer.api.routes.auth import get_current_user
 
 
@@ -65,7 +66,7 @@ def _delete_by_upload_id(upload_id: int, user_id: int) -> dict:
         ).first()
 
         if not up:
-            raise HTTPException(status_code=404, detail="Upload not found")
+            raise not_found("Upload", str(upload_id))
 
         stored_path = up.stored_path
 
@@ -124,7 +125,7 @@ def _delete_by_document_id(document_id: int, user_id: int) -> dict:
         ).first()
 
         if not doc:
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise not_found("Document", str(document_id))
 
         upload_id = doc.upload_id
 

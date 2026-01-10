@@ -67,9 +67,16 @@ engine = create_engine(
 
 def create_db_and_tables() -> None:
     """
-    Creates database tables if they don't exist.
-    This ensures persistence across server restarts.
+    DEPRECATED: Creates database tables if they don't exist.
+    
+    ⚠️ WARNING: This function violates the architecture invariant that Alembic
+    migrations are the only source of truth for schema changes.
+    
+    This function is kept for backward compatibility and potential test scenarios,
+    but should NOT be called in production code. Use `alembic upgrade head` instead.
+    
     Uses create_all which is idempotent - won't recreate existing tables.
+    However, this can cause schema drift if migrations are not applied correctly.
     """
     # Ensure the database directory exists
     if DB_URL.startswith("sqlite"):
@@ -82,7 +89,53 @@ def create_db_and_tables() -> None:
     import ai_organizer.models  # noqa: F401
     
     # Create all tables (idempotent - won't recreate if they exist)
+    # ⚠️ This can conflict with Alembic migrations if schema drifts
     SQLModel.metadata.create_all(engine)
+
+
+def verify_database_connection() -> None:
+    """
+    Verifies database connection without creating tables.
+    
+    This function checks if:
+    1. Database directory exists (for SQLite) - creates if needed
+    2. Connection to database is possible (even if database file doesn't exist yet)
+    3. Basic queries can be executed (if database exists)
+    
+    Architecture Invariant: It does NOT create tables - that must be done via Alembic migrations.
+    If database file doesn't exist, this will still succeed (SQLite creates file on first write).
+    If tables don't exist, this will still succeed (schema check happens separately in startup).
+    
+    Raises:
+        RuntimeError: If connection to database is impossible (e.g., invalid URL, permissions)
+    """
+    import logging
+    from sqlalchemy import text
+    
+    logger = logging.getLogger(__name__)
+    
+    # Ensure database directory exists (for SQLite)
+    if DB_URL.startswith("sqlite"):
+        db_path_str = DB_URL.replace("sqlite:///", "")
+        db_path = Path(db_path_str)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.debug(f"Database path: {db_path}")
+        logger.debug(f"Database file exists: {db_path.exists()}")
+    
+    # Test connection without creating tables
+    # Note: SQLite will create the file on first write, so missing file is OK
+    try:
+        with engine.connect() as conn:
+            # Simple query to verify connection works
+            # This will succeed even if tables don't exist
+            conn.execute(text("SELECT 1"))
+            logger.debug("Database connection successful")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        raise RuntimeError(
+            f"Database connection failed. Please check database URL and permissions. "
+            f"Error: {e}"
+        ) from e
 
 
 def get_session() -> Generator[Session, None, None]:

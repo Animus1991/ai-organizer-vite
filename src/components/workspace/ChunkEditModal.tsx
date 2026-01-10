@@ -6,8 +6,8 @@
  * @module components/workspace/ChunkEditModal
  */
 
-import React, { useRef } from "react";
-import { SegmentDTO } from "../../lib/api";
+import React, { useRef, useState, useEffect } from "react";
+import { SegmentDTO, SegmentType, EvidenceGrade, SegmentLinkDTO, SegmentLinksResponse, LinkType, createSegmentLink, getSegmentLinks, deleteSegmentLink } from "../../lib/api";
 import { RichTextEditor } from "../../editor/RichTextEditor";
 import { computeSelectionFromPre, splitDocByRange } from "../../lib/documentWorkspace/selection";
 import { FolderDTO } from "../../lib/segmentFolders";
@@ -42,6 +42,14 @@ export interface ChunkEditModalProps {
   dirty: boolean;
   status: string;
   onStatusChange: (status: string) => void;
+  
+  // P2: Research-Grade Fields
+  segmentType: SegmentType | null;
+  onSegmentTypeChange: (type: SegmentType | null) => void;
+  evidenceGrade: EvidenceGrade | null;
+  onEvidenceGradeChange: (grade: EvidenceGrade | null) => void;
+  falsifiabilityCriteria: string;
+  onFalsifiabilityCriteriaChange: (criteria: string) => void;
   
   // Save functionality
   onSave: () => Promise<void>;
@@ -87,6 +95,12 @@ export default function ChunkEditModal({
   dirty,
   status,
   onStatusChange,
+  segmentType,
+  onSegmentTypeChange,
+  evidenceGrade,
+  onEvidenceGradeChange,
+  falsifiabilityCriteria,
+  onFalsifiabilityCriteriaChange,
   onSave,
   fullscreen,
   onFullscreenChange,
@@ -101,6 +115,87 @@ export default function ChunkEditModal({
 }: ChunkEditModalProps) {
   
   const preRef = useRef<HTMLPreElement | null>(null);
+  
+  // P2: Segment Linking State
+  const [segmentLinks, setSegmentLinks] = useState<SegmentLinkDTO[]>([]);
+  const [linksLoading, setLinksLoading] = useState(false);
+  const [linksError, setLinksError] = useState<string | null>(null);
+  const [showLinkForm, setShowLinkForm] = useState(false);
+  const [newLinkTargetId, setNewLinkTargetId] = useState<number | null>(null);
+  const [newLinkType, setNewLinkType] = useState<LinkType>("related");
+  const [newLinkNotes, setNewLinkNotes] = useState<string>("");
+  
+  // Load segment links when segment changes
+  useEffect(() => {
+    if (!segment?.id) {
+      setSegmentLinks([]);
+      setShowLinkForm(false);
+      setLinksError(null);
+      return;
+    }
+    
+    const loadLinks = async () => {
+      setLinksLoading(true);
+      setLinksError(null);
+      try {
+        const response = await getSegmentLinks(segment.id, "both");
+        setSegmentLinks(response.links || []);
+      } catch (error: any) {
+        console.error("Failed to load segment links:", error);
+        setLinksError(error?.message || "Failed to load links");
+        setSegmentLinks([]);
+      } finally {
+        setLinksLoading(false);
+      }
+    };
+    
+    loadLinks();
+  }, [segment?.id]);
+  
+  // Handle create link
+  const handleCreateLink = async () => {
+    if (!segment?.id || !newLinkTargetId) {
+      setLinksError("Please select a target segment");
+      return;
+    }
+    
+    setLinksLoading(true);
+    setLinksError(null);
+    try {
+      const newLink = await createSegmentLink(segment.id, {
+        toSegmentId: newLinkTargetId,
+        linkType: newLinkType,
+        notes: newLinkNotes.trim() || null,
+      });
+      setSegmentLinks(prev => [...prev, { ...newLink, direction: "from" }]);
+      setNewLinkTargetId(null);
+      setNewLinkType("related");
+      setNewLinkNotes("");
+      setShowLinkForm(false);
+    } catch (error: any) {
+      console.error("Failed to create link:", error);
+      setLinksError(error?.message || "Failed to create link");
+    } finally {
+      setLinksLoading(false);
+    }
+  };
+  
+  // Handle delete link
+  const handleDeleteLink = async (linkId: number) => {
+    if (!window.confirm("Delete this link?")) return;
+    
+    setLinksLoading(true);
+    setLinksError(null);
+    try {
+      await deleteSegmentLink(linkId);
+      setSegmentLinks(prev => prev.filter(link => link.id !== linkId));
+    } catch (error: any) {
+      console.error("Failed to delete link:", error);
+      setLinksError(error?.message || "Failed to delete link");
+    } finally {
+      setLinksLoading(false);
+    }
+  };
 
   const handleCaptureSelection = () => {
     const pre = preRef.current;
@@ -552,6 +647,343 @@ export default function ChunkEditModal({
                       </option>
                     ))}
                   </select>
+                </div>
+                {/* P2: Research-Grade Fields */}
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "var(--font-size-xs)",
+                      lineHeight: "var(--line-height-normal)",
+                      fontWeight: 600,
+                      color: "rgba(255, 255, 255, 0.7)",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Segment Type:
+                  </label>
+                  <select
+                    value={segmentType ?? "untyped"}
+                    onChange={(e) => onSegmentTypeChange(e.target.value === "untyped" ? null : (e.target.value as SegmentType))}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      background: "rgba(0, 0, 0, 0.3)",
+                      color: "#eaeaea",
+                      fontSize: "var(--font-size-base)",
+                      lineHeight: "var(--line-height-normal)",
+                    }}
+                  >
+                    <option value="untyped">Untyped</option>
+                    <option value="definition">Definition</option>
+                    <option value="assumption">Assumption</option>
+                    <option value="claim">Claim</option>
+                    <option value="mechanism">Mechanism</option>
+                    <option value="prediction">Prediction</option>
+                    <option value="counterargument">Counterargument</option>
+                    <option value="evidence">Evidence</option>
+                    <option value="open_question">Open Question</option>
+                    <option value="experiment">Experiment</option>
+                    <option value="meta">Meta</option>
+                  </select>
+                </div>
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "var(--font-size-xs)",
+                      lineHeight: "var(--line-height-normal)",
+                      fontWeight: 600,
+                      color: "rgba(255, 255, 255, 0.7)",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Evidence Grade (for Claims/Predictions):
+                  </label>
+                  <select
+                    value={evidenceGrade ?? ""}
+                    onChange={(e) => onEvidenceGradeChange(e.target.value === "" ? null : (e.target.value as EvidenceGrade))}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      background: "rgba(0, 0, 0, 0.3)",
+                      color: "#eaeaea",
+                      fontSize: "var(--font-size-base)",
+                      lineHeight: "var(--line-height-normal)",
+                    }}
+                  >
+                    <option value="">None</option>
+                    <option value="E0">E0 - No evidence (idea/hypothesis)</option>
+                    <option value="E1">E1 - Internal logic only</option>
+                    <option value="E2">E2 - General literature reference (no excerpt)</option>
+                    <option value="E3">E3 - Precise source excerpt (page/quote)</option>
+                    <option value="E4">E4 - Reproducible data/experiment</option>
+                  </select>
+                </div>
+                <div>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: "var(--font-size-xs)",
+                      lineHeight: "var(--line-height-normal)",
+                      fontWeight: 600,
+                      color: "rgba(255, 255, 255, 0.7)",
+                      marginBottom: "6px",
+                    }}
+                  >
+                    Falsifiability Criteria (for Claims/Predictions):
+                  </label>
+                  <textarea
+                    value={falsifiabilityCriteria}
+                    onChange={(e) => onFalsifiabilityCriteriaChange(e.target.value)}
+                    placeholder="What would falsify this claim/prediction? What observation would weaken it?"
+                    rows={3}
+                    style={{
+                      width: "100%",
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      background: "rgba(0, 0, 0, 0.3)",
+                      color: "#eaeaea",
+                      fontSize: "var(--font-size-base)",
+                      lineHeight: "var(--line-height-normal)",
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                </div>
+                {/* P2: Segment Links Section */}
+                <div style={{ marginTop: 16, padding: 12, background: "rgba(0, 0, 0, 0.2)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                    <label
+                      style={{
+                        fontSize: "var(--font-size-xs)",
+                        lineHeight: "var(--line-height-normal)",
+                        fontWeight: 600,
+                        color: "rgba(255, 255, 255, 0.7)",
+                      }}
+                    >
+                      Segment Links ({segmentLinks.length})
+                    </label>
+                    {!showLinkForm && (
+                      <button
+                        onClick={() => setShowLinkForm(true)}
+                        style={{
+                          padding: "4px 8px",
+                          fontSize: "var(--font-size-xs)",
+                          lineHeight: "var(--line-height-normal)",
+                          background: "rgba(99, 102, 241, 0.2)",
+                          border: "1px solid rgba(99, 102, 241, 0.4)",
+                          color: "#a5b4fc",
+                          borderRadius: 4,
+                          cursor: "pointer",
+                        }}
+                      >
+                        + Add Link
+                      </button>
+                    )}
+                  </div>
+                  
+                  {linksError && (
+                    <div style={{ fontSize: "var(--font-size-xs)", color: "#ef4444", marginBottom: 8, padding: 6, background: "rgba(239, 68, 68, 0.1)", borderRadius: 4 }}>
+                      {linksError}
+                    </div>
+                  )}
+                  
+                  {showLinkForm && (
+                    <div style={{ marginBottom: 12, padding: 12, background: "rgba(0, 0, 0, 0.3)", borderRadius: 6, border: "1px solid rgba(99, 102, 241, 0.3)" }}>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ display: "block", fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.7)", marginBottom: 4 }}>
+                          Link To Segment:
+                        </label>
+                        <select
+                          value={newLinkTargetId ?? ""}
+                          onChange={(e) => setNewLinkTargetId(e.target.value ? Number(e.target.value) : null)}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(255,255,255,0.1)",
+                            background: "rgba(0, 0, 0, 0.4)",
+                            color: "#eaeaea",
+                            fontSize: "var(--font-size-xs)",
+                          }}
+                        >
+                          <option value="">Select segment...</option>
+                          {segments
+                            .filter(s => s.id !== segment?.id)
+                            .map(s => (
+                              <option key={s.id} value={s.id}>
+                                {(s.orderIndex ?? 0) + 1}. {s.title || `Segment ${s.id}`}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ display: "block", fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.7)", marginBottom: 4 }}>
+                          Link Type:
+                        </label>
+                        <select
+                          value={newLinkType}
+                          onChange={(e) => setNewLinkType(e.target.value as LinkType)}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(255,255,255,0.1)",
+                            background: "rgba(0, 0, 0, 0.4)",
+                            color: "#eaeaea",
+                            fontSize: "var(--font-size-xs)",
+                          }}
+                        >
+                          <option value="supports">Supports</option>
+                          <option value="contradicts">Contradicts</option>
+                          <option value="depends_on">Depends On</option>
+                          <option value="counterargument">Counterargument</option>
+                          <option value="evidence">Evidence</option>
+                          <option value="related">Related</option>
+                        </select>
+                      </div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={{ display: "block", fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.7)", marginBottom: 4 }}>
+                          Notes (optional):
+                        </label>
+                        <textarea
+                          value={newLinkNotes}
+                          onChange={(e) => setNewLinkNotes(e.target.value)}
+                          placeholder="Additional notes about this link..."
+                          rows={2}
+                          style={{
+                            width: "100%",
+                            padding: "6px 8px",
+                            borderRadius: 6,
+                            border: "1px solid rgba(255,255,255,0.1)",
+                            background: "rgba(0, 0, 0, 0.4)",
+                            color: "#eaeaea",
+                            fontSize: "var(--font-size-xs)",
+                            resize: "vertical",
+                            fontFamily: "inherit",
+                          }}
+                        />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          onClick={handleCreateLink}
+                          disabled={linksLoading || !newLinkTargetId}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: "var(--font-size-xs)",
+                            background: "rgba(99, 102, 241, 0.3)",
+                            border: "1px solid rgba(99, 102, 241, 0.5)",
+                            color: "#a5b4fc",
+                            borderRadius: 6,
+                            cursor: linksLoading || !newLinkTargetId ? "not-allowed" : "pointer",
+                            opacity: linksLoading || !newLinkTargetId ? 0.5 : 1,
+                          }}
+                        >
+                          {linksLoading ? "Creating..." : "Create Link"}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setShowLinkForm(false);
+                            setNewLinkTargetId(null);
+                            setNewLinkType("related");
+                            setNewLinkNotes("");
+                            setLinksError(null);
+                          }}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: "var(--font-size-xs)",
+                            background: "rgba(255, 255, 255, 0.1)",
+                            border: "1px solid rgba(255, 255, 255, 0.2)",
+                            color: "#eaeaea",
+                            borderRadius: 6,
+                            cursor: "pointer",
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {linksLoading && !showLinkForm ? (
+                    <div style={{ fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.6)", padding: 8, textAlign: "center" }}>
+                      Loading links...
+                    </div>
+                  ) : segmentLinks.length === 0 ? (
+                    <div style={{ fontSize: "var(--font-size-xs)", color: "rgba(255, 255, 255, 0.5)", padding: 8, textAlign: "center" }}>
+                      No links yet. Click "Add Link" to create one.
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {segmentLinks.map((link) => {
+                        const targetSegment = segments.find(s => s.id === (link.direction === "from" ? link.toSegmentId : link.fromSegmentId));
+                        const isOutgoing = link.direction === "from";
+                        return (
+                          <div
+                            key={link.id}
+                            style={{
+                              padding: 8,
+                              background: "rgba(0, 0, 0, 0.3)",
+                              borderRadius: 6,
+                              border: "1px solid rgba(255,255,255,0.1)",
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 8,
+                            }}
+                          >
+                            <div style={{ flex: 1, fontSize: "var(--font-size-xs)" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                <span style={{ color: isOutgoing ? "#06b6d4" : "#ec4899" }}>
+                                  {isOutgoing ? "→" : "←"}
+                                </span>
+                                <span style={{ color: "rgba(255, 255, 255, 0.8)", fontWeight: 500 }}>
+                                  {link.linkType.replace(/_/g, " ").replace(/\b\w/g, l => l.toUpperCase())}
+                                </span>
+                                {targetSegment ? (
+                                  <span style={{ color: "rgba(255, 255, 255, 0.6)" }}>
+                                    {(targetSegment.orderIndex ?? 0) + 1}. {targetSegment.title || `Segment ${link.direction === "from" ? link.toSegmentId : link.fromSegmentId}`}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: "rgba(255, 255, 255, 0.5)", fontStyle: "italic" }}>
+                                    Segment {link.direction === "from" ? link.toSegmentId : link.fromSegmentId} (not in list)
+                                  </span>
+                                )}
+                              </div>
+                              {link.notes && (
+                                <div style={{ color: "rgba(255, 255, 255, 0.5)", fontSize: "var(--font-size-xs)", marginTop: 4, fontStyle: "italic" }}>
+                                  {link.notes}
+                                </div>
+                              )}
+                            </div>
+                            <button
+                              onClick={() => handleDeleteLink(link.id)}
+                              disabled={linksLoading}
+                              style={{
+                                padding: "4px 8px",
+                                fontSize: "var(--font-size-xs)",
+                                background: "rgba(239, 68, 68, 0.2)",
+                                border: "1px solid rgba(239, 68, 68, 0.3)",
+                                color: "#ef4444",
+                                borderRadius: 4,
+                                cursor: linksLoading ? "not-allowed" : "pointer",
+                                opacity: linksLoading ? 0.5 : 1,
+                              }}
+                              title="Delete link"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 {dirty && (
                   <div

@@ -105,7 +105,14 @@ export async function refreshTokens(): Promise<string | null> {
         return data.access_token as string;
       }
       return null;
-    } catch {
+    } catch (error) {
+      // Network errors (connection refused, timeout, etc.) - return null to indicate failure
+      // Don't throw - caller should handle gracefully (e.g., not try to refresh if server is down)
+      if (error instanceof TypeError && (error.message.includes("fetch") || error.message.includes("Failed to fetch"))) {
+        // Network error - backend is not available, don't retry
+        return null;
+      }
+      // Other errors - also return null
       return null;
     } finally {
       // Clear lock after completion
@@ -161,19 +168,43 @@ export async function authFetch(path: string, init: RequestInit = {}) {
   // fetch and returns its own Response object. The lightweight GET cache
   // above still provides good performance.
 
-  const doFetch = (token: string | null) => {
+  const doFetch = async (token: string | null) => {
     const headers = new Headers(init.headers || {});
     headers.set("Accept", headers.get("Accept") || "application/json");
     if (token) headers.set("Authorization", `Bearer ${token}`);
-    return fetch(url, { ...init, headers });
+    try {
+      return await fetch(url, { ...init, headers });
+    } catch (error) {
+      // Network errors (connection refused, timeout, etc.) - wrap in AppError for consistent handling
+      // Callers like loadFolders() will catch this and gracefully fallback to localStorage
+      if (error instanceof TypeError && (error.message.includes("fetch") || error.message.includes("Failed to fetch"))) {
+        throw new AppError(
+          `Network error: Could not connect to server. Is the backend running at ${API_BASE}?`,
+          0, // Status 0 indicates network error (no HTTP response)
+          'NETWORK_ERROR'
+        );
+      }
+      throw error;
+    }
   };
 
-  let res = await doFetch(getAccessToken());
+  let res: Response;
+  try {
+    res = await doFetch(getAccessToken());
+  } catch (error) {
+    // Network error (connection refused, timeout, etc.) - re-throw for caller to handle
+    throw error;
+  }
 
   if (res.status === 401) {
     const newAccess = await refreshTokens();
     if (newAccess) {
-      res = await doFetch(newAccess);
+      try {
+        res = await doFetch(newAccess);
+      } catch (error) {
+        // Network error during retry - re-throw
+        throw error;
+      }
     } else {
       // Refresh failed - token expired or invalid
       // Clear tokens and trigger logout
@@ -218,15 +249,20 @@ export async function authFetch(path: string, init: RequestInit = {}) {
       // Clear folders cache when folder items change (add/remove chunks)
       // This includes: /workspace/folders (list), /workspace/folders/{id} (get), /workspace/documents/{id}/folders
       console.log("🗑️ authFetch: Clearing folder-items cache", { url });
-      // Extract folderId from URL if it's a DELETE request for a specific item
-      // DELETE /workspace/folder-items/{itemId} - we need to get the folder to clear its cache
+      // For DELETE /workspace/folder-items/{itemId}, we need to clear ALL folder caches
+      // because we can't determine which folder was affected without an extra API call
+      // The folder-specific cache will be cleared by explicit calls in the code, but this is a safety net
       const itemIdMatch = url.match(/\/folder-items\/(\d+)/);
       if (itemIdMatch) {
-        // For DELETE, clear all folder caches since we can't determine which folder was affected without an extra API call
-        // The folder-specific cache will be cleared by explicit calls in the code
+        // DELETE operation - clear ALL folder-related caches to ensure fresh data
+        // This is critical for foldering consistency after deletions
         apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
+        apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
+        apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/`);
       }
-      // Clear all folder-related caches to ensure fresh data
+      // For POST /workspace/folder-items (create), also clear all folder caches
+      // Clear all folder-related caches to ensure fresh data after any folder item mutation
+      apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders/`);
       apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/folders`);
       apiCache.deleteByPrefix(`cache:${API_BASE}/api/workspace/documents/`);
     }
@@ -342,6 +378,57 @@ export type UploadResponseDTO = {
   processedPath?: string | null;
 };
 
+// P2: Segment Type Enum (matches backend SegmentType)
+export type SegmentType = 
+  | "untyped"
+  | "definition"
+  | "assumption"
+  | "claim"
+  | "mechanism"
+  | "prediction"
+  | "counterargument"
+  | "evidence"
+  | "open_question"
+  | "experiment"
+  | "meta";
+
+// P2: Evidence Grade Enum (matches backend EvidenceGrade)
+export type EvidenceGrade = "E0" | "E1" | "E2" | "E3" | "E4";
+
+// P2: Link Type Enum (matches backend LinkType)
+export type LinkType = 
+  | "supports"
+  | "contradicts"
+  | "depends_on"
+  | "counterargument"
+  | "evidence"
+  | "related";
+
+// P2: Segment Link Types
+export type SegmentLinkDTO = {
+  id: number;
+  fromSegmentId: number;
+  toSegmentId: number;
+  linkType: LinkType;
+  notes?: string | null;
+  direction: "from" | "to"; // "from" = outgoing link, "to" = incoming link
+  createdAt: string;
+  createdByUserId: number;
+};
+
+export type SegmentLinksResponse = {
+  segmentId: number;
+  direction: "from" | "to" | "both";
+  links: SegmentLinkDTO[];
+  count: number;
+};
+
+export type SegmentLinkCreateDTO = {
+  toSegmentId: number;
+  linkType: LinkType;
+  notes?: string | null;
+};
+
 export type SegmentDTO = {
   id: number;
   orderIndex: number;
@@ -352,6 +439,10 @@ export type SegmentDTO = {
   end?: number;
   createdAt?: string | null;
   isManual?: boolean;
+  // P2: Research-Grade Fields (optional - may not exist if migration not run)
+  segmentType?: SegmentType | null;
+  evidenceGrade?: EvidenceGrade | null;
+  falsifiabilityCriteria?: string | null;
 };
 
 export type SegmentationSummary = {
@@ -396,6 +487,10 @@ export type SegmentPatchDTO = {
   start?: number | null;
   end?: number | null;
   content?: string | null;
+  // P2: Research-Grade Fields
+  segmentType?: SegmentType | null;
+  evidenceGrade?: EvidenceGrade | null;
+  falsifiabilityCriteria?: string | null;
 };
 
 export type DocumentPatchDTO = {
@@ -681,6 +776,73 @@ export async function getSegment(segmentId: number) {
   return (await res.json()) as SegmentDTO;
 }
 
+// P2: Segment Linking API Functions
+export async function createSegmentLink(fromSegmentId: number, link: SegmentLinkCreateDTO): Promise<SegmentLinkDTO> {
+  const res = await authFetch(`/segments/${fromSegmentId}/links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(link),
+  });
+  
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Create segment link failed: ${res.status} ${txt}`);
+  }
+  
+  const data = await res.json();
+  return {
+    id: data.id,
+    fromSegmentId: data.fromSegmentId,
+    toSegmentId: data.toSegmentId,
+    linkType: data.linkType,
+    notes: data.notes ?? null,
+    direction: "from", // Newly created links are always "from"
+    createdAt: data.createdAt,
+    createdByUserId: data.createdByUserId,
+  } as SegmentLinkDTO;
+}
+
+export async function getSegmentLinks(segmentId: number, direction: "from" | "to" | "both" = "both"): Promise<SegmentLinksResponse> {
+  const params = new URLSearchParams({ direction });
+  const res = await authFetch(`/segments/${segmentId}/links?${params.toString()}`);
+  
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Get segment links failed: ${res.status} ${txt}`);
+  }
+  
+  const data = await res.json();
+  // Backend returns links with direction already set ("from" or "to")
+  // "from" means this segment is the source (outgoing link)
+  // "to" means this segment is the target (incoming link)
+  return {
+    segmentId: data.segmentId ?? segmentId,
+    direction: data.direction ?? direction,
+    links: (data.links ?? []).map((link: any) => ({
+      id: link.id,
+      fromSegmentId: link.fromSegmentId,
+      toSegmentId: link.toSegmentId,
+      linkType: link.linkType,
+      notes: link.notes ?? null,
+      direction: link.direction ?? (link.fromSegmentId === segmentId ? "from" : "to"), // Infer direction if missing
+      createdAt: link.createdAt,
+      createdByUserId: link.createdByUserId,
+    })) as SegmentLinkDTO[],
+    count: data.count ?? 0,
+  } as SegmentLinksResponse;
+}
+
+export async function deleteSegmentLink(linkId: number): Promise<void> {
+  const res = await authFetch(`/segment-links/${linkId}`, {
+    method: "DELETE",
+  });
+  
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Delete segment link failed: ${res.status} ${txt}`);
+  }
+}
+
 // ============================================================================
 // Workspace API (Folders, Smart Notes, Document Notes)
 // ============================================================================
@@ -743,7 +905,15 @@ export async function listFolders(documentId: number): Promise<FolderDTO[]> {
   return (await res.json()) as FolderDTO[];
 }
 
-export async function getFolder(folderId: number): Promise<FolderWithItemsDTO> {
+export async function getFolder(folderId: number, skipCache: boolean = false): Promise<FolderWithItemsDTO> {
+  // If skipCache is true, clear cache before fetching to ensure fresh data
+  // This is critical for foldering consistency after deletions
+  if (skipCache) {
+    const { apiCache } = await import("./cache");
+    const API_BASE = import.meta.env.VITE_API_BASE_URL?.toString() || "http://127.0.0.1:8000";
+    apiCache.delete(`cache:${API_BASE}/api/workspace/folders/${folderId}`);
+  }
+  
   const res = await authFetch(`/workspace/folders/${folderId}`);
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -803,7 +973,8 @@ export async function createFolderItem(payload: {
     const txt = await res.text().catch(() => "");
     // Handle 409 Conflict - item already in folder (not an error, just return existing item)
     if (res.status === 409) {
-      // Try to get the existing item
+      // Item already exists - this is fine (idempotent operation)
+      // Try to get the existing item for accurate response
       try {
         const folder = await getFolder(payload.folderId);
         const existingItem = folder.items.find(
@@ -811,24 +982,40 @@ export async function createFolderItem(payload: {
                   (payload.chunkId && item.chunkId === payload.chunkId)
         );
         if (existingItem) {
+          // Return existing item - operation successful (idempotent)
           return existingItem;
         }
-      } catch {
-        // If we can't get the existing item, just return a minimal response
-        return { id: 0, folderId: payload.folderId, segmentId: payload.segmentId ?? null, chunkId: payload.chunkId ?? null } as FolderItemDTO;
+      } catch (error) {
+        // If we can't get the existing item, return minimal response
+        // This is still OK - the item exists in the folder (409 confirmed it)
+        console.debug(`409 Conflict: Item already in folder ${payload.folderId}, but couldn't fetch it. Treating as success (idempotent).`);
       }
+      // Return minimal response - item exists, operation is idempotent
+      return { id: 0, folderId: payload.folderId, segmentId: payload.segmentId ?? null, chunkId: payload.chunkId ?? null } as FolderItemDTO;
     }
     throw new Error(txt || `Failed to create folder item (${res.status})`);
   }
   return (await res.json()) as FolderItemDTO;
 }
 
-export async function deleteFolderItem(itemId: number): Promise<void> {
+export interface DeleteFolderItemResponse {
+  ok: boolean;
+  folder_deleted: boolean;
+  folder_id: number | null;
+}
+
+export async function deleteFolderItem(itemId: number): Promise<DeleteFolderItemResponse> {
   const res = await authFetch(`/workspace/folder-items/${itemId}`, { method: "DELETE" });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(txt || `Failed to delete folder item (${res.status})`);
   }
+  const data = await res.json();
+  return {
+    ok: data.ok ?? true,
+    folder_deleted: data.folder_deleted ?? false,
+    folder_id: data.folder_id ?? null,
+  };
 }
 
 // Smart Notes (workspace)
@@ -967,6 +1154,8 @@ export interface SearchResponse {
   query: string;
   results: SearchResultItem[];
   total: number;
+  semantic?: boolean; // Whether semantic search was used
+  variations?: string[]; // Query variations that were used
 }
 
 export async function search(
@@ -976,6 +1165,9 @@ export async function search(
     mode?: "qa" | "paragraphs";
     limit?: number;
     offset?: number;
+    semantic?: boolean; // Enable semantic search
+    lang?: "auto" | "el" | "en"; // Language for NLP processing
+    expand_variations?: boolean; // Expand query with variations (plural/singular, synonyms, etc.)
   }
 ): Promise<SearchResponse> {
   const params = new URLSearchParams({ q: query });
@@ -983,6 +1175,9 @@ export async function search(
   if (options?.mode) params.append("mode", options.mode);
   if (options?.limit) params.append("limit", String(options.limit));
   if (options?.offset) params.append("offset", String(options.offset));
+  if (options?.semantic !== undefined) params.append("semantic", String(options.semantic));
+  if (options?.lang) params.append("lang", options.lang);
+  if (options?.expand_variations !== undefined) params.append("expand_variations", String(options.expand_variations));
 
   const response = await authFetch(`/api/search?${params.toString()}`);
   if (!response.ok) {
@@ -990,4 +1185,232 @@ export async function search(
     throw new AppError(error.message || "Search failed", error.code || response.status);
   }
   return await response.json();
+}
+
+// ============================================================================
+// Advanced Search: Custom Synonyms Management
+// ============================================================================
+
+export interface SynonymPair {
+  word: string;
+  synonym: string;
+}
+
+export interface SynonymListResponse {
+  synonyms: Record<string, string[]>; // word -> list of synonyms
+}
+
+export interface SynonymResponse {
+  ok: boolean;
+  word: string;
+  synonym: string;
+  message?: string;
+}
+
+export async function addSynonym(word: string, synonym: string): Promise<SynonymResponse> {
+  const response = await authFetch(`/api/search/synonyms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ word, synonym }),
+  });
+  if (!response.ok) {
+    const error = await parseApiError(response);
+    throw new AppError(error.message || "Failed to add synonym", error.code || response.status);
+  }
+  return await response.json();
+}
+
+export async function removeSynonym(word: string, synonym: string): Promise<SynonymResponse> {
+  const params = new URLSearchParams({ word, synonym });
+  const response = await authFetch(`/api/search/synonyms?${params.toString()}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const error = await parseApiError(response);
+    throw new AppError(error.message || "Failed to remove synonym", error.code || response.status);
+  }
+  return await response.json();
+}
+
+export async function listSynonyms(word?: string): Promise<SynonymListResponse> {
+  const params = new URLSearchParams();
+  if (word) params.append("word", word);
+  const response = await authFetch(`/api/search/synonyms?${params.toString()}`);
+  if (!response.ok) {
+    const error = await parseApiError(response);
+    throw new AppError(error.message || "Failed to list synonyms", error.code || response.status);
+  }
+  return await response.json();
+}
+
+// ============================================================================
+// P3: Recycle Bin API (Soft Delete, Restore, Purge)
+// ============================================================================
+
+export type DeletedDocumentDTO = {
+  id: number;
+  title: string;
+  filename: string;
+  sourceType: string;
+  deletedAt: string;
+  upload: {
+    id: number;
+    contentType: string;
+    sizeBytes: number;
+  };
+};
+
+export type DeletedSegmentDTO = {
+  id: number;
+  title: string;
+  content: string;
+  mode: string;
+  documentId: number;
+  documentTitle: string;
+  deletedAt: string;
+  isManual: boolean;
+};
+
+export type DeletedFolderDTO = {
+  id: number;
+  name: string;
+  documentId: number;
+  documentTitle: string;
+  deletedAt: string;
+};
+
+export type RecycleBinItemDTO = {
+  type: "document" | "segment" | "folder";
+  id: number;
+  title?: string;
+  name?: string;
+  content?: string;
+  filename?: string;
+  documentTitle?: string;
+  deletedAt: string;
+};
+
+export type RecycleBinResponse = {
+  documents: Array<Omit<DeletedDocumentDTO, "upload"> & { type: "document" }>;
+  segments: Array<DeletedSegmentDTO & { type: "segment" }>;
+  folders: Array<DeletedFolderDTO & { type: "folder" }>;
+};
+
+// Documents
+export async function softDeleteDocument(documentId: number): Promise<{ ok: boolean; deletedAt?: string; message?: string }> {
+  const res = await authFetch(`/recycle-bin/documents/${documentId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to soft delete document (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; deletedAt?: string; message?: string };
+}
+
+export async function restoreDocument(documentId: number): Promise<{ ok: boolean; deletedAt: null | string; message?: string }> {
+  const res = await authFetch(`/recycle-bin/documents/${documentId}/restore`, { method: "POST" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to restore document (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; deletedAt: null | string; message?: string };
+}
+
+export async function permanentlyDeleteDocument(documentId: number): Promise<{ ok: boolean; permanentlyDeleted: boolean }> {
+  const res = await authFetch(`/recycle-bin/documents/${documentId}/purge`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to permanently delete document (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; permanentlyDeleted: boolean };
+}
+
+export async function listDeletedDocuments(): Promise<DeletedDocumentDTO[]> {
+  const res = await authFetch(`/recycle-bin/documents/recycle-bin`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list deleted documents (${res.status})`);
+  }
+  return (await res.json()) as DeletedDocumentDTO[];
+}
+
+// Segments
+// Note: Soft delete for segments is handled by deleteSegment() which calls DELETE /segments/{segment_id}
+// This function is for purge (hard delete) only - use deleteSegment() for soft delete
+
+export async function restoreSegment(segmentId: number): Promise<{ ok: boolean; deletedAt: null | string; message?: string }> {
+  const res = await authFetch(`/recycle-bin/segments/${segmentId}/restore`, { method: "POST" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to restore segment (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; deletedAt: null | string; message?: string };
+}
+
+export async function permanentlyDeleteSegment(segmentId: number): Promise<{ ok: boolean; permanentlyDeleted: boolean }> {
+  const res = await authFetch(`/recycle-bin/segments/${segmentId}/purge`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to permanently delete segment (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; permanentlyDeleted: boolean };
+}
+
+export async function listDeletedSegments(documentId?: number): Promise<DeletedSegmentDTO[]> {
+  const res = await authFetch(`/recycle-bin/segments/recycle-bin`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list deleted segments (${res.status})`);
+  }
+  const segments = (await res.json()) as DeletedSegmentDTO[];
+  // Filter by documentId if provided
+  if (documentId !== undefined) {
+    return segments.filter(s => s.documentId === documentId);
+  }
+  return segments;
+}
+
+// Folders
+// Note: Soft delete for folders is handled by deleteFolder() which calls DELETE /workspace/folders/{folder_id}
+// This function is for purge (hard delete) only - use deleteFolder() for soft delete
+
+export async function restoreFolder(folderId: number): Promise<{ ok: boolean; deletedAt: null | string; message?: string }> {
+  const res = await authFetch(`/recycle-bin/folders/${folderId}/restore`, { method: "POST" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to restore folder (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; deletedAt: null | string; message?: string };
+}
+
+export async function permanentlyDeleteFolder(folderId: number): Promise<{ ok: boolean; permanentlyDeleted: boolean }> {
+  const res = await authFetch(`/recycle-bin/folders/${folderId}/purge`, { method: "DELETE" });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to permanently delete folder (${res.status})`);
+  }
+  return (await res.json()) as { ok: boolean; permanentlyDeleted: boolean };
+}
+
+export async function listDeletedFolders(documentId?: number): Promise<DeletedFolderDTO[]> {
+  const res = await authFetch(`/recycle-bin/folders/recycle-bin`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list deleted folders (${res.status})`);
+  }
+  const folders = (await res.json()) as DeletedFolderDTO[];
+  // Filter by documentId if provided
+  if (documentId !== undefined) {
+    return folders.filter(f => f.documentId === documentId);
+  }
+  return folders;
+}
+
+// Combined Recycle Bin
+export async function listAllDeletedItems(): Promise<RecycleBinResponse> {
+  const res = await authFetch(`/recycle-bin/recycle-bin`);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `Failed to list deleted items (${res.status})`);
+  }
+  return (await res.json()) as RecycleBinResponse;
 }

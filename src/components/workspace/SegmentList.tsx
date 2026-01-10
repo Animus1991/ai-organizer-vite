@@ -3,8 +3,46 @@ import { highlightSearch } from "../../lib/searchUtils";
 import { preview120 } from "../../lib/documentWorkspace/utils";
 import { plainTextToHtml } from "../../editor/utils/text";
 import FolderView from "../FolderView";
-import type { SegmentDTO } from "../../lib/api";
+import type { SegmentDTO, SegmentType, EvidenceGrade } from "../../lib/api";
 import type { FolderDTO } from "../../lib/segmentFolders";
+
+// Helper function to format segment type for display
+function formatSegmentType(type: string | null | undefined): string {
+  if (!type || type === "untyped") return "";
+  return type
+    .split("_")
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+// Helper function to get segment type badge color
+function getSegmentTypeColor(type: string | null | undefined): string {
+  const colors: Record<string, string> = {
+    definition: "#6366f1",      // indigo
+    assumption: "#8b5cf6",      // purple
+    claim: "#ec4899",           // pink
+    mechanism: "#f59e0b",       // amber
+    prediction: "#10b981",      // emerald
+    counterargument: "#ef4444", // red
+    evidence: "#06b6d4",        // cyan
+    open_question: "#84cc16",   // lime
+    experiment: "#f97316",      // orange
+    meta: "#64748b",            // slate
+  };
+  return colors[type || ""] || "#6b7280"; // default gray for untyped
+}
+
+// Helper function to get evidence grade badge color
+function getEvidenceGradeColor(grade: string | null | undefined): string {
+  const colors: Record<string, string> = {
+    E0: "#6b7280",  // gray - no evidence
+    E1: "#ef4444",  // red - internal logic only
+    E2: "#f59e0b",  // amber - general reference
+    E3: "#3b82f6",  // blue - precise excerpt
+    E4: "#10b981",  // emerald - reproducible data
+  };
+  return colors[grade || ""] || "#6b7280";
+}
 
 export interface SegmentListProps {
   segments: SegmentDTO[];
@@ -77,11 +115,50 @@ export function SegmentList({
             flex: "0 0 auto",
           }}
         >
-          <b style={{ flex: 1 }}>
-            {(((openSeg as any).orderIndex ?? 0) as number) + 1}. {(openSeg as any).title}{" "}
-            <span style={{ fontSize: "var(--font-size-xs)", lineHeight: "var(--line-height-normal)", opacity: 0.7 }}>
-              {(openSeg as any).isManual ? "• manual" : "• auto"}
+          <b style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span>
+              {(((openSeg as any).orderIndex ?? 0) as number) + 1}. {(openSeg as any).title}{" "}
+              <span style={{ fontSize: "var(--font-size-xs)", lineHeight: "var(--line-height-normal)", opacity: 0.7 }}>
+                {(openSeg as any).isManual ? "• manual" : "• auto"}
+              </span>
             </span>
+            {/* P2: Segment Type Badge in open view */}
+            {(openSeg as any).segmentType && (openSeg as any).segmentType !== "untyped" && (
+              <span
+                style={{
+                  fontSize: "var(--font-size-xs)",
+                  lineHeight: "var(--line-height-normal)",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: `${getSegmentTypeColor((openSeg as any).segmentType)}20`,
+                  border: `1px solid ${getSegmentTypeColor((openSeg as any).segmentType)}60`,
+                  color: getSegmentTypeColor((openSeg as any).segmentType),
+                  fontWeight: 500,
+                }}
+                title={`Segment Type: ${formatSegmentType((openSeg as any).segmentType)}`}
+              >
+                {formatSegmentType((openSeg as any).segmentType)}
+              </span>
+            )}
+            {/* P2: Evidence Grade Badge in open view */}
+            {(openSeg as any).evidenceGrade && (
+              <span
+                style={{
+                  fontSize: "var(--font-size-xs)",
+                  lineHeight: "var(--line-height-normal)",
+                  padding: "2px 6px",
+                  borderRadius: 4,
+                  background: `${getEvidenceGradeColor((openSeg as any).evidenceGrade)}20`,
+                  border: `1px solid ${getEvidenceGradeColor((openSeg as any).evidenceGrade)}60`,
+                  color: getEvidenceGradeColor((openSeg as any).evidenceGrade),
+                  fontWeight: 600,
+                  fontFamily: "monospace",
+                }}
+                title={`Evidence Grade: ${(openSeg as any).evidenceGrade}`}
+              >
+                {(openSeg as any).evidenceGrade}
+              </span>
+            )}
           </b>
 
           <button onClick={() => onEdit(openSeg)} style={{ padding: "8px 10px" }}>
@@ -187,6 +264,45 @@ export function SegmentList({
                     <span style={{ marginLeft: 8, fontSize: "var(--font-size-xs)", lineHeight: "var(--line-height-normal)", opacity: 0.7 }}>
                       {s.isManual ? "manual" : "auto"}
                     </span>
+                    {/* P2: Segment Type Badge */}
+                    {(s as any).segmentType && (s as any).segmentType !== "untyped" && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: "var(--font-size-xs)",
+                          lineHeight: "var(--line-height-normal)",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: `${getSegmentTypeColor((s as any).segmentType)}20`,
+                          border: `1px solid ${getSegmentTypeColor((s as any).segmentType)}60`,
+                          color: getSegmentTypeColor((s as any).segmentType),
+                          fontWeight: 500,
+                        }}
+                        title={`Segment Type: ${formatSegmentType((s as any).segmentType)}`}
+                      >
+                        {formatSegmentType((s as any).segmentType)}
+                      </span>
+                    )}
+                    {/* P2: Evidence Grade Badge */}
+                    {(s as any).evidenceGrade && (
+                      <span
+                        style={{
+                          marginLeft: 8,
+                          fontSize: "var(--font-size-xs)",
+                          lineHeight: "var(--line-height-normal)",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: `${getEvidenceGradeColor((s as any).evidenceGrade)}20`,
+                          border: `1px solid ${getEvidenceGradeColor((s as any).evidenceGrade)}60`,
+                          color: getEvidenceGradeColor((s as any).evidenceGrade),
+                          fontWeight: 600,
+                          fontFamily: "monospace",
+                        }}
+                        title={`Evidence Grade: ${(s as any).evidenceGrade}`}
+                      >
+                        {(s as any).evidenceGrade}
+                      </span>
+                    )}
                     {folderMap[String(s.id)] ? (
                       <span
                         style={{
@@ -233,23 +349,6 @@ export function SegmentList({
                         </option>
                       ))}
                     </select>
-                    <button
-                      onClick={() => {
-                        onFolderChange(s, folders[0]?.id || null);
-                      }}
-                      style={{
-                        padding: "4px 8px",
-                        borderRadius: 6,
-                        border: "1px solid rgba(255,255,255,0.12)",
-                        background: "#ff6b6b",
-                        color: "white",
-                        fontSize: "var(--font-size-xs)",
-                        lineHeight: "var(--line-height-normal)",
-                        cursor: "pointer",
-                      }}
-                    >
-                      TEST
-                    </button>
 
                     <button
                       onClick={(e) => {

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { search, SearchResultItem } from "../lib/api";
 import { useLoading } from "../hooks/useLoading";
 import { highlightSearch, truncateWithHighlight } from "../lib/searchUtils";
+import SynonymsManager from "./SynonymsManager";
 
 interface SearchModalProps {
   open: boolean;
@@ -19,6 +20,11 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
   const [selectedMode, setSelectedMode] = useState<"all" | "qa" | "paragraphs">("all");
   const [sortBy, setSortBy] = useState<SortOption>("relevance");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [semantic, setSemantic] = useState(false); // Enable semantic search
+  const [lang, setLang] = useState<"auto" | "el" | "en">("auto"); // Language selection
+  const [expandVariations, setExpandVariations] = useState(true); // Expand query variations
+  const [searchResponse, setSearchResponse] = useState<{ semantic?: boolean; variations?: string[] } | null>(null);
+  const [synonymsManagerOpen, setSynonymsManagerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLDivElement>(null);
   const { loading, execute } = useLoading();
@@ -32,27 +38,43 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
     }
   }, [open]);
 
+  const [searchError, setSearchError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!query.trim()) {
       setResults([]);
+      setSearchResponse(null);
+      setSearchError(null);
       return;
     }
 
     const timeoutId = setTimeout(() => {
       execute(async () => {
-        const response = await search(query, {
-          type: selectedType === "all" ? undefined : selectedType,
-          mode: selectedMode === "all" ? undefined : selectedMode,
-          limit: 100, // Increased limit for better results
-        });
-        setResults(response.results);
-        setSelectedIndex(0);
-        return response;
+        try {
+          setSearchError(null);
+          const response = await search(query, {
+            type: selectedType === "all" ? undefined : selectedType,
+            mode: selectedMode === "all" ? undefined : selectedMode,
+            limit: 100, // Increased limit for better results
+            semantic, // Enable semantic search
+            lang, // Language selection
+            expand_variations: expandVariations, // Expand query variations
+          });
+          setResults(response.results);
+          setSearchResponse({ semantic: response.semantic, variations: response.variations });
+          setSelectedIndex(0);
+          return response;
+        } catch (error: any) {
+          console.error("Search error:", error);
+          setSearchError(error.message || "Search failed. Please try again.");
+          setResults([]);
+          setSearchResponse(null);
+        }
       });
     }, 300); // Debounce
 
     return () => clearTimeout(timeoutId);
-  }, [query, selectedType, selectedMode, execute]);
+  }, [query, selectedType, selectedMode, semantic, lang, expandVariations, execute]);
 
   // Sort results
   const sortedResults = useMemo(() => {
@@ -182,6 +204,22 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
             />
           </div>
           <button
+            onClick={() => setSynonymsManagerOpen(true)}
+            style={{
+              padding: "8px 12px",
+              background: "rgba(99, 102, 241, 0.2)",
+              border: "1px solid rgba(99, 102, 241, 0.3)",
+              borderRadius: "8px",
+              color: "#a5b4fc",
+              cursor: "pointer",
+              fontSize: "12px",
+              fontWeight: 600,
+            }}
+            title="Manage custom synonyms"
+          >
+            📚 Synonyms
+          </button>
+          <button
             onClick={onClose}
             style={{
               padding: "12px",
@@ -243,6 +281,79 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
               <option value="paragraphs">Paragraphs</option>
             </select>
           ) : null}
+          
+          {/* Advanced Search Options */}
+          <div style={{ display: "flex", gap: "8px", alignItems: "center", padding: "4px 0", flexWrap: "wrap" }}>
+            <label 
+              style={{ 
+                display: "flex", 
+                alignItems: "center", 
+                gap: "6px", 
+                cursor: "pointer", 
+                fontSize: "13px", 
+                color: "rgba(255, 255, 255, 0.8)",
+                padding: "4px 8px",
+                borderRadius: "6px",
+                background: semantic ? "rgba(99, 102, 241, 0.15)" : "transparent",
+                transition: "background 0.2s",
+              }}
+              title="Enable semantic search with embeddings (requires sentence-transformers)"
+            >
+              <input
+                type="checkbox"
+                checked={semantic}
+                onChange={(e) => setSemantic(e.target.checked)}
+                style={{ cursor: "pointer", transform: "scale(1.1)" }}
+              />
+              <span style={{ fontWeight: semantic ? 600 : 400 }}>🧠 Semantic</span>
+            </label>
+            {semantic && (
+              <>
+                <select
+                  value={lang}
+                  onChange={(e) => setLang(e.target.value as "auto" | "el" | "en")}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                    border: "1px solid rgba(255, 255, 255, 0.1)",
+                    background: "rgba(0, 0, 0, 0.3)",
+                    color: "#eaeaea",
+                    fontSize: "12px",
+                    cursor: "pointer",
+                  }}
+                  title="Language for NLP processing (auto-detection, Greek, or English)"
+                >
+                  <option value="auto">🌐 Auto</option>
+                  <option value="el">🇬🇷 Greek (Ελληνικά)</option>
+                  <option value="en">🇬🇧 English</option>
+                </select>
+                <label 
+                  style={{ 
+                    display: "flex", 
+                    alignItems: "center", 
+                    gap: "6px", 
+                    cursor: "pointer", 
+                    fontSize: "13px", 
+                    color: "rgba(255, 255, 255, 0.8)",
+                    padding: "4px 8px",
+                    borderRadius: "6px",
+                    background: expandVariations ? "rgba(99, 102, 241, 0.1)" : "transparent",
+                    transition: "background 0.2s",
+                  }}
+                  title="Expand query with variations (plural/singular, synonyms, lemmatization) - requires spaCy"
+                >
+                  <input
+                    type="checkbox"
+                    checked={expandVariations}
+                    onChange={(e) => setExpandVariations(e.target.checked)}
+                    style={{ cursor: "pointer", transform: "scale(1.1)" }}
+                  />
+                  <span style={{ fontWeight: expandVariations ? 600 : 400 }}>📝 Variations</span>
+                </label>
+              </>
+            )}
+          </div>
+          
           <div style={{ flex: 1 }} />
           <select
             value={sortBy}
@@ -271,6 +382,92 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
             </div>
           )}
         </div>
+        
+        {/* Search Info: Show semantic search status and variations */}
+        {searchResponse && query.trim() && (searchResponse.semantic || searchResponse.variations?.length) && (
+          <div
+            style={{
+              padding: "10px 24px",
+              borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+              fontSize: "12px",
+              color: "rgba(255, 255, 255, 0.7)",
+              background: "rgba(99, 102, 241, 0.08)",
+              display: "flex",
+              alignItems: "center",
+              gap: "12px",
+              flexWrap: "wrap",
+            }}
+          >
+            {searchResponse.semantic && (
+              <span style={{ display: "flex", alignItems: "center", gap: "6px", color: "rgba(99, 102, 241, 0.9)", fontWeight: 500 }}>
+                <span>🧠</span>
+                <span>Semantic search enabled</span>
+              </span>
+            )}
+            {searchResponse.variations && searchResponse.variations.length > 1 && (
+              <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                <span style={{ opacity: 0.6 }}>📝</span>
+                <span>
+                  <strong>Variations:</strong> {searchResponse.variations.slice(0, 3).join(", ")}
+                  {searchResponse.variations.length > 3 && ` (+${searchResponse.variations.length - 3} more)`}
+                </span>
+              </span>
+            )}
+          </div>
+        )}
+        
+        {/* Warning if semantic search is requested but not available */}
+        {semantic && !searchResponse?.semantic && query.trim() && !loading && results.length > 0 && (
+          <div
+            style={{
+              padding: "10px 24px",
+              borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+              fontSize: "12px",
+              color: "rgba(255, 165, 0, 0.9)",
+              background: "rgba(255, 165, 0, 0.1)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span>⚠️</span>
+            <span>Semantic search requested but not available. Using FTS5 search only. Install sentence-transformers for semantic search.</span>
+          </div>
+        )}
+        
+        {/* Search Error */}
+        {searchError && query.trim() && (
+          <div
+            style={{
+              padding: "12px 24px",
+              borderBottom: "1px solid rgba(255, 255, 255, 0.1)",
+              fontSize: "13px",
+              color: "rgba(255, 100, 100, 0.9)",
+              background: "rgba(255, 0, 0, 0.1)",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <span>❌</span>
+            <span>{searchError}</span>
+            <button
+              onClick={() => setSearchError(null)}
+              style={{
+                marginLeft: "auto",
+                padding: "4px 8px",
+                background: "rgba(255, 255, 255, 0.1)",
+                border: "none",
+                borderRadius: "4px",
+                color: "rgba(255, 255, 255, 0.8)",
+                cursor: "pointer",
+                fontSize: "12px",
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Results */}
         <div
@@ -446,6 +643,9 @@ export default function SearchModal({ open, onClose, onSelectResult }: SearchMod
           </div>
         )}
       </div>
+      
+      {/* Synonyms Manager Modal */}
+      <SynonymsManager open={synonymsManagerOpen} onClose={() => setSynonymsManagerOpen(false)} />
     </div>
   );
 }

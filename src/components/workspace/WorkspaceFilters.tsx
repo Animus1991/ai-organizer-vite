@@ -44,11 +44,21 @@ export interface WorkspaceFiltersProps {
   // Actions
   onFoldersOpen: () => void;
   onWizardOpen: () => void;
+  onSearchModalOpen?: () => void;
   
   // Data
   folders: FolderDTO[];
   filteredSegmentsCount: number;
   totalSegmentsCount: number;
+  
+  // Semantic Search Options (optional)
+  semanticSearch?: boolean;
+  onSemanticSearchChange?: (enabled: boolean) => void;
+  searchLanguage?: "auto" | "el" | "en";
+  onSearchLanguageChange?: (lang: "auto" | "el" | "en") => void;
+  expandVariations?: boolean;
+  onExpandVariationsChange?: (enabled: boolean) => void;
+  onSynonymsManagerOpen?: () => void;
 }
 
 /**
@@ -71,9 +81,17 @@ export default function WorkspaceFilters({
   onPresetChange,
   onFoldersOpen,
   onWizardOpen,
+  onSearchModalOpen,
   folders,
   filteredSegmentsCount,
   totalSegmentsCount,
+  semanticSearch = false,
+  onSemanticSearchChange,
+  searchLanguage = "auto",
+  onSearchLanguageChange,
+  expandVariations = true,
+  onExpandVariationsChange,
+  onSynonymsManagerOpen,
 }: WorkspaceFiltersProps) {
   
   const handleClear = () => {
@@ -187,23 +205,52 @@ export default function WorkspaceFilters({
         </button>
 
         {/* Search Input */}
-        <input
-          value={query}
-          onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="🔍 Search chunks..."
-          className="flex-1 min-w-0 px-3 py-2 bg-surface border border-border rounded"
+        <div
           style={{
             flex: "1 1 300px",
             minWidth: "200px",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: "1px solid rgba(255,255,255,0.12)",
-            background: "#0f1420",
-            color: "#eaeaea",
-            fontSize: "var(--font-size-base)",
-            lineHeight: "var(--line-height-normal)",
+            position: "relative",
+            display: "flex",
+            alignItems: "center",
           }}
-        />
+        >
+          <svg
+            style={{
+              position: "absolute",
+              left: "12px",
+              width: "16px",
+              height: "16px",
+              color: "rgba(255, 255, 255, 0.5)",
+              pointerEvents: "none",
+              flexShrink: 0,
+              zIndex: 1, // Ensure icon is above input text
+            }}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+          </svg>
+          <input
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
+            placeholder="Search chunks..."
+            className="flex-1 min-w-0"
+            style={{
+              width: "100%",
+              paddingLeft: "36px", // Explicit left padding to prevent text overlap with icon (12px icon + 12px gap + 12px padding)
+              paddingRight: "12px",
+              paddingTop: "8px",
+              paddingBottom: "8px",
+              borderRadius: 8,
+              border: "1px solid rgba(255,255,255,0.12)",
+              background: "#0f1420",
+              color: "#eaeaea",
+              fontSize: "var(--font-size-base)",
+              lineHeight: "var(--line-height-normal)",
+            }}
+          />
+        </div>
 
         {/* Clear Button */}
         <button 
@@ -256,6 +303,28 @@ export default function WorkspaceFilters({
           </svg>
           Filters
         </button>
+
+        {/* Global Search Button - Opens SearchModal with semantic search */}
+        {onSearchModalOpen && (
+          <button
+            onClick={onSearchModalOpen}
+            className="btn-secondary px-3 py-2 bg-surface border border-border rounded hover:bg-surface-elevated transition-colors flex items-center gap-2"
+            style={{ 
+              padding: "8px 10px",
+              fontSize: "var(--font-size-base)",
+              lineHeight: "var(--line-height-normal)",
+              background: "rgba(99, 102, 241, 0.15)",
+              borderColor: "rgba(99, 102, 241, 0.3)",
+              color: "#a5b4fc",
+            }}
+            title="Global search with semantic search (Ctrl+K)"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={{ width: "16px", height: "16px" }}>
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            🧠 Global Search
+          </button>
+        )}
       </div>
 
       {/* Advanced Filters Panel */}
@@ -332,6 +401,138 @@ export default function WorkspaceFilters({
             marginLeft: "auto" 
           }}>
             {filteredSegmentsCount} / {totalSegmentsCount} segments
+          </div>
+        </div>
+      )}
+      
+      {/* Semantic Search Options */}
+      {(onSemanticSearchChange || onSearchLanguageChange || onExpandVariationsChange || onSynonymsManagerOpen) && (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 16,
+            background: "rgba(99, 102, 241, 0.05)",
+            border: "1px solid rgba(99, 102, 241, 0.2)",
+            borderRadius: 12,
+            display: "flex",
+            gap: 16,
+            flexWrap: "wrap",
+            alignItems: "center",
+          }}
+        >
+          <div style={{ 
+            fontSize: "var(--font-size-sm)", 
+            lineHeight: "var(--line-height-normal)", 
+            fontWeight: 600, 
+            color: "rgba(255, 255, 255, 0.8)",
+            marginRight: "auto"
+          }}>
+            🧠 Semantic Search Options:
+          </div>
+          
+          {onSemanticSearchChange && (
+            <label style={{ 
+              display: "flex", 
+              alignItems: "center", 
+              gap: 6, 
+              cursor: "pointer", 
+              fontSize: "var(--font-size-sm)", 
+              color: "rgba(255, 255, 255, 0.8)",
+              padding: "6px 12px",
+              borderRadius: 6,
+              background: semanticSearch ? "rgba(99, 102, 241, 0.15)" : "transparent",
+              transition: "background 0.2s",
+            }}
+            title="Enable semantic search with embeddings (requires sentence-transformers)"
+            >
+              <input
+                type="checkbox"
+                checked={semanticSearch}
+                onChange={(e) => onSemanticSearchChange(e.target.checked)}
+                style={{ cursor: "pointer", transform: "scale(1.1)" }}
+              />
+              <span style={{ fontWeight: semanticSearch ? 600 : 400 }}>Semantic</span>
+            </label>
+          )}
+          
+          {semanticSearch && onSearchLanguageChange && (
+            <select
+              value={searchLanguage}
+              onChange={(e) => onSearchLanguageChange(e.target.value as "auto" | "el" | "en")}
+              style={{
+                padding: "6px 10px",
+                borderRadius: 6,
+                border: "1px solid rgba(255, 255, 255, 0.1)",
+                background: "rgba(0, 0, 0, 0.3)",
+                color: "#eaeaea",
+                fontSize: "var(--font-size-sm)",
+                lineHeight: "var(--line-height-normal)",
+                cursor: "pointer",
+              }}
+              title="Language for NLP processing (auto-detection, Greek, or English)"
+            >
+              <option value="auto">🌐 Auto</option>
+              <option value="el">🇬🇷 Greek (Ελληνικά)</option>
+              <option value="en">🇬🇧 English</option>
+            </select>
+          )}
+          
+          {semanticSearch && onExpandVariationsChange && (
+            <label style={{ 
+              display: "flex", 
+              alignItems: "center", 
+              gap: 6, 
+              cursor: "pointer", 
+              fontSize: "var(--font-size-sm)", 
+              color: "rgba(255, 255, 255, 0.8)",
+              padding: "6px 12px",
+              borderRadius: 6,
+              background: expandVariations ? "rgba(99, 102, 241, 0.1)" : "transparent",
+              transition: "background 0.2s",
+            }}
+            title="Expand query with variations (plural/singular, synonyms, lemmatization) - requires spaCy"
+            >
+              <input
+                type="checkbox"
+                checked={expandVariations}
+                onChange={(e) => onExpandVariationsChange(e.target.checked)}
+                style={{ cursor: "pointer", transform: "scale(1.1)" }}
+              />
+              <span style={{ fontWeight: expandVariations ? 600 : 400 }}>📝 Variations</span>
+            </label>
+          )}
+          
+          {onSynonymsManagerOpen && (
+            <button
+              onClick={onSynonymsManagerOpen}
+              style={{
+                padding: "6px 12px",
+                background: "rgba(99, 102, 241, 0.2)",
+                border: "1px solid rgba(99, 102, 241, 0.3)",
+                borderRadius: 6,
+                color: "#a5b4fc",
+                cursor: "pointer",
+                fontSize: "var(--font-size-sm)",
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Manage custom synonyms"
+            >
+              <span>📚</span>
+              <span>Synonyms</span>
+            </button>
+          )}
+          
+          <div style={{ 
+            fontSize: "var(--font-size-xs)", 
+            lineHeight: "var(--line-height-normal)", 
+            color: "rgba(255, 255, 255, 0.5)", 
+            marginLeft: "auto",
+            fontStyle: "italic"
+          }}>
+            Note: Semantic search uses backend API. Current filtering is local only.
           </div>
         </div>
       )}

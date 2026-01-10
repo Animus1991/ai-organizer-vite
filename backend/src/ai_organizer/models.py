@@ -2,10 +2,59 @@
 
 from datetime import datetime
 from typing import Optional
+from enum import Enum
 
-from sqlalchemy import UniqueConstraint
-from sqlmodel import SQLModel, Field, Relationship
+from sqlalchemy import UniqueConstraint, CheckConstraint
+from sqlmodel import SQLModel, Field, Relationship, Column
+from sqlalchemy import String, Integer, Text
 
+
+# ============================================================================
+# P2: Research-Grade Enums (defined before models that use them)
+# ============================================================================
+
+# P2: Research-Grade Segment Types
+class SegmentType(str, Enum):
+    """Scientific segment typing for research-grade organization"""
+    # Core types
+    DEFINITION = "definition"
+    ASSUMPTION = "assumption"
+    CLAIM = "claim"
+    MECHANISM = "mechanism"  # Causal chain
+    PREDICTION = "prediction"  # Testable prediction
+    COUNTERARGUMENT = "counterargument"
+    EVIDENCE = "evidence"
+    OPEN_QUESTION = "open_question"
+    EXPERIMENT = "experiment"  # Test/experiment description
+    META = "meta"  # Structure/outline/paper structure
+    # Fallback
+    UNTYPED = "untyped"  # Default for existing segments
+
+
+# P2: Evidence Grading Scale
+class EvidenceGrade(str, Enum):
+    """Evidence quality grading (E0-E4) for claims and predictions"""
+    E0 = "E0"  # No evidence (idea/hypothesis)
+    E1 = "E1"  # Internal logic only
+    E2 = "E2"  # General literature reference (no excerpt)
+    E3 = "E3"  # Precise source excerpt (page/quote)
+    E4 = "E4"  # Reproducible data/experiment
+
+
+# P2: Segment Linking Graph
+class LinkType(str, Enum):
+    """Types of relationships between segments"""
+    SUPPORTS = "supports"  # Segment A supports/evidences Segment B (claim)
+    CONTRADICTS = "contradicts"  # Segment A contradicts Segment B
+    DEPENDS_ON = "depends_on"  # Segment A depends on Segment B (definition → claim)
+    COUNTERARGUMENT = "counterargument"  # Segment A is counterargument to Segment B
+    EVIDENCE = "evidence"  # Segment A is evidence for Segment B (claim)
+    RELATED = "related"  # General relationship (weak link)
+
+
+# ============================================================================
+# Core Models
+# ============================================================================
 
 class User(SQLModel, table=True):
     __tablename__ = "users"
@@ -61,6 +110,36 @@ class Upload(SQLModel, table=True):
     )
 
 
+class DocumentVersion(SQLModel, table=True):
+    """
+    Document versioning system for provenance safety.
+    
+    When a document is edited, instead of mutating the original Document.text,
+    a new DocumentVersion row is created. The original Document.text remains immutable.
+    
+    Architecture Invariant: Original text is immutable; edits create derived versions.
+    """
+    __tablename__ = "document_versions"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    
+    document_id: int = Field(foreign_key="documents.id", index=True)
+    version_number: int = Field(index=True)
+    
+    title: str
+    text: str
+    
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    created_by_user_id: int = Field(foreign_key="users.id", index=True)
+    
+    document: Optional["Document"] = Relationship(back_populates="versions")
+    created_by_user: Optional["User"] = Relationship()
+    
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_number", name="uq_document_version"),
+    )
+
+
 class Document(SQLModel, table=True):
     __tablename__ = "documents"
 
@@ -75,12 +154,16 @@ class Document(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
-    user: Optional["User"] = Relationship(back_populates="documents")
     upload: Optional["Upload"] = Relationship(back_populates="documents")
 
     parse_status: str = Field(default="pending", index=True)
     parse_error: Optional[str] = Field(default=None)
     processed_path: Optional[str] = Field(default=None)
+    
+    # P3: Soft delete field
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+
+    user: Optional["User"] = Relationship(back_populates="documents")
 
     segments: list["Segment"] = Relationship(
         back_populates="document",
@@ -97,6 +180,9 @@ class Document(SQLModel, table=True):
     )
     document_note: Optional["DocumentNote"] = Relationship(
         sa_relationship_kwargs={"cascade": "all, delete-orphan", "uselist": False},
+    )
+    versions: list["DocumentVersion"] = Relationship(
+        sa_relationship_kwargs={"cascade": "all, delete-orphan", "order_by": "DocumentVersion.version_number"},
     )
 
 
@@ -123,9 +209,38 @@ class Segment(SQLModel, table=True):
     # ✅ ΝΕΟ: manual marker
     is_manual: bool = Field(default=False, index=True)
 
+    # P2: Research-Grade Fields
+    segment_type: Optional[str] = Field(
+        default=SegmentType.UNTYPED.value,
+        index=True,
+        description="Scientific segment type (definition, claim, prediction, etc.)"
+    )
+    evidence_grade: Optional[str] = Field(
+        default=None,
+        index=True,
+        description="Evidence quality grade (E0-E4) for claims/predictions"
+    )
+    falsifiability_criteria: Optional[str] = Field(
+        default=None,
+        description="What would falsify this claim/prediction? What observation weakens it?"
+    )
+
+    # P3: Soft delete field
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
 
     document: Optional["Document"] = Relationship(back_populates="segments")
+    
+    # P2: Linking relationships (defined after SegmentLink model)
+    links_from: list["SegmentLink"] = Relationship(
+        back_populates="from_segment",
+        sa_relationship_kwargs={"foreign_keys": "[SegmentLink.from_segment_id]", "cascade": "all, delete-orphan"}
+    )
+    links_to: list["SegmentLink"] = Relationship(
+        back_populates="to_segment",
+        sa_relationship_kwargs={"foreign_keys": "[SegmentLink.to_segment_id]", "cascade": "all, delete-orphan"}
+    )
 
 
 class RefreshToken(SQLModel, table=True):
@@ -145,6 +260,57 @@ class RefreshToken(SQLModel, table=True):
 
 
 # ============================================================================
+# P2: Research-Grade Models
+# ============================================================================
+
+class SegmentLink(SQLModel, table=True):
+    """
+    P2: Linking graph for research-grade reasoning chains.
+    
+    Supports traceable relations between segments:
+    - Claim ↔ Evidence
+    - Claim ↔ Counterargument
+    - Claim ↔ Definition (depends on)
+    - Claim ↔ Prediction/Test
+    - Segment ↔ Segment (supports/contradicts/depends-on)
+    """
+    __tablename__ = "segment_links"
+    
+    id: Optional[int] = Field(default=None, primary_key=True)
+    
+    from_segment_id: int = Field(foreign_key="segments.id", index=True)
+    to_segment_id: int = Field(foreign_key="segments.id", index=True)
+    
+    link_type: str = Field(
+        default=LinkType.RELATED.value,
+        index=True,
+        description="Type of relationship (supports, contradicts, depends_on, etc.)"
+    )
+    
+    # Optional: User notes about the link
+    notes: Optional[str] = Field(default=None, description="User notes about this link")
+    
+    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    created_by_user_id: int = Field(foreign_key="users.id", index=True)
+    
+    from_segment: Optional["Segment"] = Relationship(
+        back_populates="links_from",
+        sa_relationship_kwargs={"foreign_keys": "[SegmentLink.from_segment_id]"}
+    )
+    to_segment: Optional["Segment"] = Relationship(
+        back_populates="links_to",
+        sa_relationship_kwargs={"foreign_keys": "[SegmentLink.to_segment_id]"}
+    )
+    created_by_user: Optional["User"] = Relationship()
+    
+    __table_args__ = (
+        UniqueConstraint("from_segment_id", "to_segment_id", "link_type", name="uq_segment_link"),
+        # Prevent self-links (segment cannot link to itself)
+        CheckConstraint("from_segment_id != to_segment_id", name="ck_no_self_link"),
+    )
+
+
+# ============================================================================
 # User Workspace Models (Folders, Notes, etc.)
 # ============================================================================
 
@@ -159,6 +325,9 @@ class Folder(SQLModel, table=True):
 
     name: str
     created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    
+    # P3: Soft delete field
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
 
     user: Optional["User"] = Relationship()
     document: Optional["Document"] = Relationship()
