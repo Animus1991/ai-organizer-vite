@@ -175,3 +175,13 @@ def internal_server_error(message: str = "Internal server error", details: Optio
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         details=details
     )
+
+
+def not_implemented(message: str = "Feature not implemented", details: Optional[Dict[str, Any]] = None) -> HTTPException:
+    """Create a 501 Not Implemented error"""
+    return create_error_response(
+        code="not_implemented",
+        message=message,
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        details=details
+    )

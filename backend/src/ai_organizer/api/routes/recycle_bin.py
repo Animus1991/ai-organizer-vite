@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from ai_organizer.api.errors import not_found, bad_request
 from sqlmodel import Session, select
 from sqlalchemy import func
 
@@ -112,7 +113,10 @@ def permanently_delete_document(
         
         # Must be soft-deleted first
         if not doc.deleted_at:
-            raise HTTPException(status_code=400, detail="Document must be deleted first")
+            raise bad_request(
+                message="Document must be deleted first",
+                details={"document_id": document_id, "operation": "purge"}
+            )
         
         # Hard delete (cascade will handle related records)
         session.delete(doc)
@@ -171,7 +175,10 @@ def permanently_delete_segment(
         
         # Must be soft-deleted first
         if not seg.deleted_at:
-            raise HTTPException(status_code=400, detail="Segment must be deleted first")
+            raise bad_request(
+                message="Segment must be deleted first",
+                details={"segment_id": segment_id, "operation": "purge"}
+            )
         
         # Hard delete
         session.delete(seg)
@@ -255,7 +262,10 @@ def permanently_delete_folder(
         
         # Must be soft-deleted first
         if not folder.deleted_at:
-            raise HTTPException(status_code=400, detail="Folder must be deleted first")
+            raise bad_request(
+                message="Folder must be deleted first",
+                details={"folder_id": folder_id, "operation": "purge"}
+            )
         
         # Hard delete (cascade will handle related records)
         session.delete(folder)
@@ -392,7 +402,10 @@ def purge_custom_retention(
 ):
     """Manually purge items older than specified days"""
     if days < 1:
-        raise HTTPException(status_code=400, detail="Days must be at least 1")
+        raise bad_request(
+            message="Days must be at least 1",
+            details={"days": days, "operation": "purge_custom"}
+        )
     
     results = purge_service.manual_purge(days)
     return {

@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 
 from ai_organizer.core.db import engine
 from ai_organizer.core.auth_dep import get_current_user
+from ai_organizer.api.errors import not_found, bad_request, not_implemented
 from ai_organizer.models import Document, Segment, User
 
 # Import semantic search service (optional - graceful fallback)
@@ -506,9 +507,9 @@ def add_synonym(
     This will make "document" and "file" synonyms in search.
     """
     if not SEMANTIC_SEARCH_AVAILABLE or _synonym_manager is None:
-        raise HTTPException(
-            status_code=501,
-            detail="Semantic search not available. Install sentence-transformers and spacy."
+        raise not_implemented(
+            message="Semantic search not available. Install sentence-transformers and spacy.",
+            details={"missing_dependencies": ["sentence-transformers", "spacy"]}
         )
     
     try:
@@ -520,7 +521,10 @@ def add_synonym(
             message=f"Added synonym pair: {pair.word} <-> {pair.synonym}"
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error adding synonym: {str(e)}")
+        raise bad_request(
+            message=f"Error adding synonym: {str(e)}",
+            details={"word": pair.word, "synonym": pair.synonym, "error": str(e)}
+        )
 
 
 @router.delete("/search/synonyms", response_model=SynonymResponse)
@@ -533,9 +537,9 @@ def remove_synonym(
     Remove a custom synonym pair (bidirectional).
     """
     if not SEMANTIC_SEARCH_AVAILABLE or _synonym_manager is None:
-        raise HTTPException(
-            status_code=501,
-            detail="Semantic search not available. Install sentence-transformers and spacy."
+        raise not_implemented(
+            message="Semantic search not available. Install sentence-transformers and spacy.",
+            details={"missing_dependencies": ["sentence-transformers", "spacy"]}
         )
     
     try:
@@ -547,7 +551,10 @@ def remove_synonym(
             message=f"Removed synonym pair: {word} <-> {synonym}"
         )
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error removing synonym: {str(e)}")
+        raise bad_request(
+            message=f"Error removing synonym: {str(e)}",
+            details={"word": word, "synonym": synonym, "error": str(e)}
+        )
 
 
 @router.get("/search/synonyms", response_model=SynonymListResponse)
@@ -562,9 +569,9 @@ def list_synonyms(
     Otherwise, returns all custom synonyms.
     """
     if not SEMANTIC_SEARCH_AVAILABLE or _synonym_manager is None:
-        raise HTTPException(
-            status_code=501,
-            detail="Semantic search not available. Install sentence-transformers and spacy."
+        raise not_implemented(
+            message="Semantic search not available. Install sentence-transformers and spacy.",
+            details={"missing_dependencies": ["sentence-transformers", "spacy"]}
         )
     
     try:
@@ -581,5 +588,8 @@ def list_synonyms(
                 all_synonyms[word] = list(syns)
             return SynonymListResponse(synonyms=all_synonyms)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error listing synonyms: {str(e)}")
+        raise bad_request(
+            message=f"Error listing synonyms: {str(e)}",
+            details={"word": word, "error": str(e)}
+        )
 
